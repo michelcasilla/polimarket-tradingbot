@@ -169,6 +169,7 @@ const main = async (): Promise<void> => {
       type: 'LIMIT',
       timeInForce: 'GTC',
       postOnly: true,
+      signalReason: signal.reason,
       ttlMs: env.STRATEGIST_AUTOEXEC_TTL_MS,
       createdAt: signal.timestamp,
     };

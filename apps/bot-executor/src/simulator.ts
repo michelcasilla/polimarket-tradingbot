@@ -108,14 +108,23 @@ export const createSimulator = (config: SimulatorConfig) => {
     order: ExecutionOrder,
     status: ExecutionStatus,
     extras: Partial<ExecutionResult> = {},
-  ): ExecutionResult => ({
-    orderId: order.id,
-    marketId: order.marketId,
-    status,
-    filledSize: 0,
-    timestamp: Date.now(),
-    ...extras,
-  });
+  ): ExecutionResult => {
+    const ttlMs = order.ttlMs ?? config.defaultTtlMs;
+    const base: ExecutionResult = {
+      orderId: order.id,
+      marketId: order.marketId,
+      status,
+      filledSize: 0,
+      timestamp: Date.now(),
+      outcome: order.outcome,
+      side: order.side,
+      requestedPrice: order.price,
+      requestedSize: order.size,
+      expiresAt: order.createdAt + ttlMs,
+    };
+    if (order.signalReason) base.signalReason = order.signalReason;
+    return { ...base, ...extras };
+  };
 
   const synthLatencyMs = (): number =>
     config.latencyMinMs + Math.floor(Math.random() * Math.max(1, config.latencyJitterMs));

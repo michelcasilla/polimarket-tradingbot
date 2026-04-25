@@ -50,14 +50,21 @@ export const createLiveAdapter = (config: LiveAdapterConfig) => {
     submit: (order: ExecutionOrder): ExecutionResult => {
       stats.ordersReceived += 1;
       stats.ordersRejected += 1;
-      return {
+      const result: ExecutionResult = {
         orderId: order.id,
         marketId: order.marketId,
         status: 'REJECTED',
         filledSize: 0,
         error: REJECTION_REASON,
         timestamp: Date.now(),
+        outcome: order.outcome,
+        side: order.side,
+        requestedPrice: order.price,
+        requestedSize: order.size,
       };
+      if (order.signalReason) result.signalReason = order.signalReason;
+      if (order.ttlMs) result.expiresAt = order.createdAt + order.ttlMs;
+      return result;
     },
 
     cancel: (cancel: CancelOrder): ExecutionResult => {

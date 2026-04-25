@@ -23,6 +23,12 @@ export const ExecutionOrderSchema = z.object({
    */
   postOnly: z.boolean().default(true),
   signalId: z.string().optional(),
+  /**
+   * Free-form tag identifying which strategy emitted the order
+   * (e.g. SPREAD_CAPTURE). Echoed back in ExecutionResult so the dashboard
+   * can label the row without parsing the orderId.
+   */
+  signalReason: z.string().optional(),
   ttlMs: z.number().int().positive().optional(),
   createdAt: z.number().int().nonnegative(),
 });
@@ -58,5 +64,18 @@ export const ExecutionResultSchema = z.object({
   fees: z.number().nonnegative().optional(),
   error: z.string().optional(),
   timestamp: z.number().int().nonnegative(),
+  /**
+   * Order context echoed back by the executor so dashboards/strategists can
+   * reconcile a result with the originating intent without keeping an
+   * in-memory map. All optional for backward compat.
+   */
+  outcome: OutcomeSchema.optional(),
+  side: SideSchema.optional(),
+  requestedPrice: z.number().min(0).max(1).optional(),
+  requestedSize: z.number().positive().optional(),
+  /** Absolute epoch-ms when this PLACED order would TTL out. */
+  expiresAt: z.number().int().nonnegative().optional(),
+  /** Free-form reason tag (e.g. SPREAD_CAPTURE) so the UI can label results. */
+  signalReason: z.string().optional(),
 });
 export type ExecutionResult = z.infer<typeof ExecutionResultSchema>;

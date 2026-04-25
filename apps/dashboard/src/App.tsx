@@ -38,6 +38,7 @@ import { buildOracleMap, type OracleSignalView } from './oracle';
 import { buildMetadataMap, type MarketMetadataView } from './metadata';
 import {
   buildExecutionList,
+  computeLivePnlUsdc,
   type ExecutionResultView,
   type ExecutionStatus,
 } from './execution';
@@ -351,8 +352,26 @@ const executionStatusColors: Record<ExecutionStatus, string> = {
   ERROR: 'magenta',
 };
 
+const formatDurationMs = (ms: number): string => {
+  if (!Number.isFinite(ms)) return '—';
+  const abs = Math.abs(ms);
+  if (abs < 1000) return `${Math.round(ms)}ms`;
+  if (abs < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (abs < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
+  return `${(ms / 3_600_000).toFixed(1)}h`;
+};
+
+const formatPnl = (value: number | null): string => {
+  if (value === null) return '—';
+  const sign = value > 0 ? '+' : value < 0 ? '−' : '';
+  const magnitude = Math.abs(value);
+  if (magnitude < 0.0001) return '$0.0000';
+  return `${sign}$${magnitude.toFixed(4)}`;
+};
+
 const buildExecutionColumns = (
   metadataMap: Map<string, MarketMetadataView>,
+  snapshots: MarketSnapshot[],
   now: number,
 ): ColumnsType<ExecutionResultView> => [
     {
@@ -360,19 +379,37 @@ const buildExecutionColumns = (
       key: 'status',
       width: 130,
       render: (_: unknown, record) => (
-        <Tag color={executionStatusColors[record.status]}>{record.status}</Tag>
+        <Space direction="vertical" size={2} style={{ rowGap: 0 }}>
+          <Tag color={executionStatusColors[record.status]}>{record.status}</Tag>
+          {record.side && (
+            <Tag
+              color={record.side === 'BUY' ? 'green' : 'volcano'}
+              style={{ fontSize: 10, lineHeight: '14px', padding: '0 4px' }}
+            >
+              {record.side}
+              {record.outcome ? ` ${record.outcome}` : ''}
+            </Tag>
+          )}
+        </Space>
       ),
     },
     {
       title: 'Order',
       key: 'orderId',
-      width: 160,
+      width: 170,
       render: (_: unknown, record) => (
-        <Tooltip title={record.orderId}>
-          <span className="mono" style={{ fontSize: 11 }}>
-            {truncateId(record.orderId, 8, 6)}
-          </span>
-        </Tooltip>
+        <Space direction="vertical" size={2} style={{ rowGap: 0 }}>
+          <Tooltip title={record.orderId}>
+            <span className="mono" style={{ fontSize: 11 }}>
+              {truncateId(record.orderId, 8, 6)}
+            </span>
+          </Tooltip>
+          {record.signalReason && (
+            <Tag color="blue" style={{ fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>
+              {record.signalReason}
+            </Tag>
+          )}
+        </Space>
       ),
     },
     {
@@ -398,50 +435,140 @@ const buildExecutionColumns = (
       title: 'Filled',
       key: 'filledSize',
       align: 'right',
-      width: 110,
-      render: (_: unknown, record) => (
-        <span className="mono">{record.filledSize > 0 ? record.filledSize.toFixed(2) : '—'}</span>
-      ),
+      width: 120,
+      render: (_: unknown, record) => {
+        const requested = record.requestedSize;
+        if (requested === null && record.filledSize === 0) {
+          return <span className="mono">—</span>;
+        }
+        const filled = record.filledSize.toFixed(2);
+        const total = requested === null ? '?' : requested.toFixed(2);
+        const fullyFilled = requested !== null && record.filledSize >= requested;
+        return (
+          <Tooltip title={`${filled} filled out of ${total} requested`}>
+            <span
+              className="mono"
+              style={{
+                color:
+                  record.filledSize === 0 ? 'rgba(255,255,255,0.45)' : fullyFilled ? '#52c41a' : '#faad14',
+              }}
+            >
+              {filled} / {total}
+            </span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: 'Avg Px',
       key: 'avg',
       align: 'right',
-      width: 100,
-      render: (_: unknown, record) => (
-        <span className="mono">{formatProb(record.averagePrice)}</span>
-      ),
+      width: 110,
+      render: (_: unknown, record) => {
+        if (record.averagePrice !== null) {
+          return <span className="mono">{formatProb(record.averagePrice)}</span>;
+        }
+        if (record.requestedPrice !== null) {
+          return (
+            <Tooltip title="Limit price (no fill)">
+              <span className="mono" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                @{formatProb(record.requestedPrice)}
+              </span>
+            </Tooltip>
+          );
+        }
+        return <span className="mono">—</span>;
+      },
     },
     {
       title: 'Fees',
       key: 'fees',
       align: 'right',
-      width: 100,
-      render: (_: unknown, record) => (
-        <span className="mono">{record.fees === null ? '—' : `$${record.fees.toFixed(4)}`}</span>
-      ),
+      width: 90,
+      render: (_: unknown, record) => {
+        const value = record.fees ?? 0;
+        const muted = record.filledSize === 0;
+        return (
+          <span className="mono" style={{ color: muted ? 'rgba(255,255,255,0.45)' : undefined }}>
+            ${value.toFixed(4)}
+          </span>
+        );
+      },
+    },
+    {
+      title: 'PnL (mtm)',
+      key: 'pnl',
+      align: 'right',
+      width: 110,
+      render: (_: unknown, record) => {
+        const pnl = computeLivePnlUsdc(record, snapshots);
+        if (pnl === null) {
+          return <span className="mono" style={{ color: 'rgba(255,255,255,0.35)' }}>—</span>;
+        }
+        const color = pnl > 0 ? '#52c41a' : pnl < 0 ? '#ff4d4f' : undefined;
+        return (
+          <Tooltip title="Mark-to-market: (close@bestBid for BUY / bestAsk for SELL) − filled price − fees">
+            <span className="mono" style={{ color, fontWeight: 600 }}>
+              {formatPnl(pnl)}
+            </span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: 'Reason',
-      key: 'error',
-      render: (_: unknown, record) =>
-        record.error ? (
-          <Text type="danger" className="mono" style={{ fontSize: 11 }}>
-            {record.error}
-          </Text>
-        ) : (
-          <span className="mono">—</span>
-        ),
+      key: 'reason',
+      width: 180,
+      render: (_: unknown, record) => {
+        if (record.error) {
+          return (
+            <Text type="danger" className="mono" style={{ fontSize: 11 }}>
+              {record.error}
+            </Text>
+          );
+        }
+        if (record.signalReason) {
+          return (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {record.signalReason}
+            </Text>
+          );
+        }
+        return <span className="mono">—</span>;
+      },
     },
     {
-      title: 'Age',
+      title: 'Age / TTL',
       key: 'age',
       align: 'right',
-      width: 90,
+      width: 110,
       render: (_: unknown, record) => {
         const ageMs = now - record.timestamp;
-        const text = ageMs < 1000 ? `${ageMs}ms` : `${(ageMs / 1000).toFixed(1)}s`;
-        return <span className="mono">{text}</span>;
+        const ageText = formatDurationMs(ageMs);
+        if (record.status === 'PLACED' && record.expiresAt !== null) {
+          const remaining = record.expiresAt - now;
+          if (remaining > 0) {
+            return (
+              <Space direction="vertical" size={0} style={{ rowGap: 0 }}>
+                <span className="mono" style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11 }}>
+                  {ageText}
+                </span>
+                <Tooltip title="Time until TTL expiry">
+                  <span
+                    className="mono"
+                    style={{
+                      color: remaining < 1000 ? '#ff4d4f' : remaining < 3000 ? '#faad14' : '#52c41a',
+                      fontWeight: 600,
+                    }}
+                  >
+                    ⏳ {formatDurationMs(remaining)}
+                  </span>
+                </Tooltip>
+              </Space>
+            );
+          }
+        }
+        return <span className="mono">{ageText}</span>;
       },
     },
   ];
@@ -592,13 +719,25 @@ const App = () => {
   const marketColumns = useMemo(() => buildMarketColumns(metadataMap), [metadataMap]);
   const executions = useMemo(() => buildExecutionList(rareEvents, 60), [rareEvents]);
   const executionColumns = useMemo(
-    () => buildExecutionColumns(metadataMap, now),
-    [metadataMap, now],
+    () => buildExecutionColumns(metadataMap, snapshots, now),
+    [metadataMap, snapshots, now],
   );
   const fillCount = useMemo(
     () => executions.filter((e) => e.status === 'FILLED').length,
     [executions],
   );
+  const livePnlUsdc = useMemo(() => {
+    let sum = 0;
+    let counted = 0;
+    for (const exec of executions) {
+      const pnl = computeLivePnlUsdc(exec, snapshots);
+      if (pnl !== null) {
+        sum += pnl;
+        counted += 1;
+      }
+    }
+    return { sum, counted };
+  }, [executions, snapshots]);
   const liveSignals = useMemo(
     () => signals.filter((sig) => !isStale(sig, now)),
     [signals, now],
@@ -617,6 +756,14 @@ const App = () => {
       { key: 'live-signals', label: 'Live Signals', value: String(liveSignals.length) },
       { key: 'oracle-topics', label: 'Oracle Topics', value: String(oracleSignals.length) },
       { key: 'executions', label: 'Fills (recent)', value: String(fillCount) },
+      {
+        key: 'pnl',
+        label: 'PnL (mtm, recent)',
+        value:
+          livePnlUsdc.counted === 0
+            ? '—'
+            : `${formatPnl(livePnlUsdc.sum)} (${livePnlUsdc.counted})`,
+      },
       { key: 'market-events', label: 'Book Updates', value: String(marketEvents) },
       {
         key: 'buffer',
@@ -631,6 +778,8 @@ const App = () => {
     events,
     eventsPerSecond,
     fillCount,
+    livePnlUsdc.counted,
+    livePnlUsdc.sum,
     liveSignals.length,
     oracleSignals.length,
     snapshots,
@@ -794,7 +943,9 @@ const App = () => {
             <Text type="secondary">
               {executions.length === 0
                 ? 'Waiting for first execution result…'
-                : `${fillCount} fills · ${executions.length} recent results`}
+                : livePnlUsdc.counted === 0
+                  ? `${fillCount} fills · ${executions.length} recent results`
+                  : `${fillCount} fills · PnL ${formatPnl(livePnlUsdc.sum)} (${livePnlUsdc.counted} marked) · ${executions.length} recent`}
             </Text>
           }
         >
