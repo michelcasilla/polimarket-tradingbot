@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+# ---------------------------------------------------------------------------
+# Multi-stage Bun image used by all four bots and the dashboard gateway.
+# Build a single bot with:
+#   docker build -f infra/docker/Dockerfile.bot \
+#     --build-arg APP=bot-oracle \
+#     -t polymarket-bot/bot-oracle:dev .
+#
+# APP must be one of: bot-oracle | bot-tape-reader | bot-strategist |
+#                     bot-executor | dashboard-gateway
+# ---------------------------------------------------------------------------
+
+ARG BUN_VERSION=1.1.30
+
+# ---- Stage 1: install deps with full lockfile (cached layer) ----
+FROM oven/bun:${BUN_VERSION}-slim AS deps
+WORKDIR /repo
+
+COPY package.json bun.lockb* ./
+COPY tsconfig.base.json ./
+COPY packages ./packages
+COPY apps ./apps
+
+RUN bun install --frozen-lockfile || bun install
+
+# ---- Stage 2: typecheck (fail fast in CI) ----
+FROM deps AS check
+ARG APP
+RUN bun run --filter "@polymarket-bot/${APP}" typecheck
+
+# ---- Stage 3: runtime ----
+FROM oven/bun:${BUN_VERSION}-slim AS runtime
+ARG APP
+ENV APP=${APP} \
+    NODE_ENV=production \
+    LOG_LEVEL=info
+
+WORKDIR /app
+
+# Copy only what the runtime needs
+COPY --from=deps /repo/package.json ./package.json
+COPY --from=deps /repo/tsconfig.base.json ./tsconfig.base.json
+COPY --from=deps /repo/node_modules ./node_modules
+COPY --from=deps /repo/packages ./packages
+COPY --from=deps /repo/apps/${APP} ./apps/${APP}
+
+# Drop privileges
+RUN addgroup --system --gid 1001 botuser \
+ && adduser --system --uid 1001 --ingroup botuser botuser \
+ && chown -R botuser:botuser /app
+USER botuser
+
+# Healthcheck targets the embedded /healthz endpoint (see packages/health).
+# The exact port is set per-bot via env in docker-compose.yml.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+  CMD bun -e "fetch('http://127.0.0.1:'+(process.env.HEALTH_PORT||'7000')+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+CMD ["sh", "-c", "bun run --cwd apps/${APP} start"]

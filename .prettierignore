@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+out
+.turbo
+bun.lockb
+*.tsbuildinfo
+docs/
+infra/**/.terraform/

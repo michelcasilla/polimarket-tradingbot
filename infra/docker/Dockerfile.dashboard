@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+# ---------------------------------------------------------------------------
+# Dashboard (React + Ant Design) production build served by nginx.
+# ---------------------------------------------------------------------------
+
+ARG BUN_VERSION=1.1.30
+
+FROM oven/bun:${BUN_VERSION}-slim AS builder
+WORKDIR /repo
+
+COPY package.json bun.lockb* ./
+COPY tsconfig.base.json ./
+COPY apps ./apps
+COPY packages ./packages
+
+RUN bun install --frozen-lockfile || bun install
+RUN bun run --cwd apps/dashboard build
+
+FROM nginx:1.27-alpine
+COPY --from=builder /repo/apps/dashboard/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

@@ -1,0 +1,139 @@
+# ---------------------------------------------------------------------------
+# Local dev stack: Redis + 4 bots + dashboard gateway + dashboard placeholder.
+# Designed to mirror the production AWS Dublín deployment (Plan 1, infra/aws-dublin).
+# ---------------------------------------------------------------------------
+
+x-bot-base: &bot-base
+  build:
+    context: .
+    dockerfile: infra/docker/Dockerfile.bot
+  env_file:
+    - .env
+  environment:
+    REDIS_URL: redis://redis:6379
+    NODE_ENV: ${NODE_ENV:-development}
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  networks:
+    - polymarket
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: polymarket-redis
+    ports:
+      - '6379:6379'
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    networks:
+      - polymarket
+
+  bot-oracle:
+    <<: *bot-base
+    container_name: polymarket-bot-oracle
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.bot
+      args:
+        APP: bot-oracle
+    environment:
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: '7001'
+      HEALTH_PORT_ORACLE: '7001'
+    ports:
+      - '7001:7001'
+
+  bot-tape-reader:
+    <<: *bot-base
+    container_name: polymarket-bot-tape-reader
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.bot
+      args:
+        APP: bot-tape-reader
+    environment:
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: '7002'
+      HEALTH_PORT_TAPE_READER: '7002'
+    ports:
+      - '7002:7002'
+
+  bot-strategist:
+    <<: *bot-base
+    container_name: polymarket-bot-strategist
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.bot
+      args:
+        APP: bot-strategist
+    environment:
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: '7003'
+      HEALTH_PORT_STRATEGIST: '7003'
+    ports:
+      - '7003:7003'
+    depends_on:
+      redis:
+        condition: service_healthy
+      bot-oracle:
+        condition: service_started
+      bot-tape-reader:
+        condition: service_started
+
+  bot-executor:
+    <<: *bot-base
+    container_name: polymarket-bot-executor
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.bot
+      args:
+        APP: bot-executor
+    environment:
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: '7004'
+      HEALTH_PORT_EXECUTOR: '7004'
+    ports:
+      - '7004:7004'
+    depends_on:
+      redis:
+        condition: service_healthy
+      bot-strategist:
+        condition: service_started
+
+  dashboard-gateway:
+    <<: *bot-base
+    container_name: polymarket-dashboard-gateway
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.bot
+      args:
+        APP: dashboard-gateway
+    environment:
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: '7005'
+      HEALTH_PORT_DASHBOARD_GATEWAY: '7005'
+      DASHBOARD_WS_PORT: '7010'
+    ports:
+      - '7005:7005'
+      - '7010:7010'
+
+  dashboard:
+    container_name: polymarket-dashboard
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.dashboard
+    ports:
+      - '8080:80'
+    networks:
+      - polymarket
+
+networks:
+  polymarket:
+    driver: bridge

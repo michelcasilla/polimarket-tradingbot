@@ -1,0 +1,34 @@
+{
+  "name": "polimarket-tradingbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ecosistema multi-agente de alta frecuencia para Polymarket (4 bots + dashboard) sobre Polygon",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "bun run --filter '*' lint",
+    "test": "bun test",
+    "dev:redis": "docker compose up redis",
+    "dev:up": "docker compose up --build",
+    "dev:down": "docker compose down -v",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.5.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.2",
+    "eslint": "^9.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.5.0",
+    "@typescript-eslint/parser": "^8.5.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "packageManager": "bun@1.1.30"
+}

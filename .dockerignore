@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/build
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+.git
+.github
+.cursor
+docs
+infra/aws-dublin/.terraform
+*.md
+.env
+.env.*
+!.env.example

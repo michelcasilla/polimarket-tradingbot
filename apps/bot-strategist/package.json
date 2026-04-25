@@ -1,0 +1,24 @@
+{
+  "name": "@polymarket-bot/bot-strategist",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@polymarket-bot/bus": "workspace:*",
+    "@polymarket-bot/config": "workspace:*",
+    "@polymarket-bot/contracts": "workspace:*",
+    "@polymarket-bot/health": "workspace:*",
+    "@polymarket-bot/logger": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2"
+  }
+}
