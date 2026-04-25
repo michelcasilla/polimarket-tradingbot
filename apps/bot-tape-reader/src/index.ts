@@ -36,7 +36,8 @@ const EnvSchema = CommonEnvSchema.merge(PolymarketEnvSchema).extend({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((v) => v === 'true'),
-  TAPE_READER_METADATA_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
+  /** Republish metadata to Redis so the dashboard can recover after reconnects (lower = more Redis traffic). */
+  TAPE_READER_METADATA_INTERVAL_MS: z.coerce.number().int().positive().default(90_000),
 });
 
 const env = loadEnv(EnvSchema);
