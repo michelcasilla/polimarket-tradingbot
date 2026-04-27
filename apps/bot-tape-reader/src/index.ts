@@ -115,15 +115,6 @@ const main = async (): Promise<void> => {
         })
       : null;
 
-  if (restPoller) {
-    await restPoller.start();
-    logger.info('tape-reader.rest.started');
-  }
-  if (wsClient) {
-    await wsClient.start();
-    logger.info('tape-reader.ws.started');
-  }
-
   const metadataPublisher = startMetadataPublisher({
     bus,
     logger,
@@ -138,6 +129,15 @@ const main = async (): Promise<void> => {
     );
   } else {
     logger.warn('tape-reader.metadata.publisher.skipped: no metadata to publish');
+  }
+
+  if (restPoller) {
+    await restPoller.start();
+    logger.info('tape-reader.rest.started');
+  }
+  if (wsClient) {
+    await wsClient.start();
+    logger.info('tape-reader.ws.started');
   }
 
   const health = await startHealthServer({

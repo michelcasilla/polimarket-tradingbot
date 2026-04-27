@@ -6,13 +6,25 @@ const { Link, Text } = Typography;
 
 const polymarketEventUrl = (slug: string): string => `https://polymarket.com/event/${slug}`;
 
+/**
+ * Polymarket's website resolves URLs by **event** slug, not by market slug.
+ * Prefer `eventSlug`; only fall back to `slug` for legacy single-market
+ * events where the two coincide.
+ */
+const resolveHref = (meta: MarketMetadataView | undefined): string | null => {
+  if (!meta) return null;
+  if (meta.eventSlug) return polymarketEventUrl(meta.eventSlug);
+  if (meta.slug) return polymarketEventUrl(meta.slug);
+  return null;
+};
+
 export interface MarketFichaContentProps {
   marketId: string;
   meta: MarketMetadataView | undefined;
 }
 
 export const MarketFichaContent = ({ marketId, meta }: MarketFichaContentProps) => {
-  const href = meta?.slug ? polymarketEventUrl(meta.slug) : null;
+  const href = resolveHref(meta);
   return (
     <div className="market-ficha" style={{ maxWidth: 380 }}>
       <Descriptions bordered size="small" column={1} labelStyle={{ width: 108 }}>

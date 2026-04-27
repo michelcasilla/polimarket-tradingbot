@@ -86,7 +86,15 @@ export const useDashboardAggregates = (
 
   const metadataMap = useMemo(() => {
     const merged = new Map(gammaMetadataMap);
-    for (const [k, v] of redisMetadataMap) merged.set(k, v);
+    for (const [k, v] of redisMetadataMap) {
+      // Redis is the freshest source overall, but it currently does NOT carry
+      // `eventSlug` (the tape-reader publishes from /sampling-markets which
+      // does not expose it). Keep the gamma-derived `eventSlug` so the
+      // "view market" link keeps working after redis overrides the row.
+      const prior = merged.get(k);
+      const eventSlug = v.eventSlug ?? prior?.eventSlug ?? null;
+      merged.set(k, { ...v, eventSlug });
+    }
     return merged;
   }, [redisMetadataMap, gammaMetadataMap]);
 

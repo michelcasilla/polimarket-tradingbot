@@ -45,6 +45,11 @@ export const MarketMetadataSchema = z.object({
   marketId: z.string().min(1),
   question: z.string(),
   slug: z.string(),
+  // Event-level slug (used to build polymarket.com/event/<slug> URLs).
+  // The market `slug` alone often does NOT resolve on the website when the
+  // market is part of a multi-outcome event, so the event slug is required
+  // to build a working link.
+  eventSlug: z.string().optional(),
   category: z.string().optional(),
   endDateIso: z.string().datetime().optional(),
   active: z.boolean(),

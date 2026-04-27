@@ -1,4 +1,4 @@
-import { Card, Empty, Space } from 'antd';
+import { Card, Empty, Flex } from 'antd';
 import type { ReactNode } from 'react';
 
 export interface DataTableCardProps {
@@ -23,17 +23,13 @@ export const DataTableCard = ({
 }: DataTableCardProps) => (
   <Card
     className={cardClassName}
-    title={
-      columnLegend ? (
-        <Space align="center" wrap size={8}>
-          {title}
-          {columnLegend}
-        </Space>
-      ) : (
-        title
-      )
+    title={title}
+    extra={
+      <Flex align="center" gap={8} justify="flex-end" wrap={false} style={{ whiteSpace: 'nowrap' }}>
+        {extra}
+        {columnLegend}
+      </Flex>
     }
-    extra={extra}
   >
     {isEmpty ? <Empty description={emptyDescription} /> : children}
   </Card>

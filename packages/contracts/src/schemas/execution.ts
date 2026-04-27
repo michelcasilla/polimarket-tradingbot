@@ -37,10 +37,35 @@ export type ExecutionOrder = z.infer<typeof ExecutionOrderSchema>;
 export const CancelOrderSchema = z.object({
   orderId: z.string().min(1),
   marketId: z.string().min(1),
-  reason: z.enum(['STRATEGY', 'CIRCUIT_BREAKER', 'TTL', 'MANUAL', 'ORACLE_EVENT']),
+  reason: z.enum([
+    'STRATEGY',
+    'CIRCUIT_BREAKER',
+    'TTL',
+    'MANUAL',
+    'ORACLE_EVENT',
+    /** Dashboard manual cancel via HTTP gateway */
+    'DASHBOARD',
+  ]),
   requestedAt: z.number().int().nonnegative(),
 });
 export type CancelOrder = z.infer<typeof CancelOrderSchema>;
+
+export const ExecutorControlCommandSchema = z.object({
+  type: z.enum(['PAUSE', 'RESUME']),
+  reason: z.string().optional(),
+  requestedAt: z.number().int().nonnegative(),
+});
+export type ExecutorControlCommand = z.infer<typeof ExecutorControlCommandSchema>;
+
+export const ExecutorStatusEventSchema = z.object({
+  paused: z.boolean(),
+  /** Epoch-ms when current paused/resume state began. */
+  since: z.number().int().nonnegative(),
+  openOrderCount: z.number().int().min(0),
+  mode: z.enum(['simulation', 'live']),
+  lastReason: z.string().nullable(),
+});
+export type ExecutorStatusEvent = z.infer<typeof ExecutorStatusEventSchema>;
 
 export const ExecutionStatusSchema = z.enum([
   'PENDING',
@@ -77,5 +102,7 @@ export const ExecutionResultSchema = z.object({
   expiresAt: z.number().int().nonnegative().optional(),
   /** Free-form reason tag (e.g. SPREAD_CAPTURE) so the UI can label results. */
   signalReason: z.string().optional(),
+  /** Set by bot-executor when publishing so dashboards can filter simulation vs live. */
+  executorMode: z.enum(['simulation', 'live']).optional(),
 });
 export type ExecutionResult = z.infer<typeof ExecutionResultSchema>;

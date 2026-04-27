@@ -14,6 +14,7 @@
     "test": "bun test",
     "dev:redis": "docker compose up redis",
     "dev:up": "docker compose up --build",
+    "dev:dashboard": "bun run --cwd apps/dashboard dev",
     "dev:down": "docker compose down -v",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

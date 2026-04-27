@@ -14,6 +14,8 @@ export type ExecutionStatus =
 export type ExecutionSide = 'BUY' | 'SELL';
 export type ExecutionOutcome = 'YES' | 'NO';
 
+export type ExecutorRunMode = 'simulation' | 'live';
+
 export interface ExecutionResultView {
   orderId: string;
   marketId: string;
@@ -30,6 +32,8 @@ export interface ExecutionResultView {
   requestedSize: number | null;
   expiresAt: number | null;
   signalReason: string | null;
+  /** From executor payload; null if legacy event without tag (treated as simulation when filtering). */
+  executorMode: ExecutorRunMode | null;
 }
 
 const CHANNEL = 'executor:results';
@@ -56,6 +60,9 @@ const isSide = (value: unknown): value is ExecutionSide =>
 
 const isOutcome = (value: unknown): value is ExecutionOutcome =>
   value === 'YES' || value === 'NO';
+
+const isExecutorMode = (value: unknown): value is ExecutorRunMode =>
+  value === 'simulation' || value === 'live';
 
 const num = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -101,6 +108,7 @@ export const extractExecutionResult = (event: GatewayEvent): ExecutionResultView
     requestedSize: num(d['requestedSize']),
     expiresAt: num(d['expiresAt']),
     signalReason,
+    executorMode: isExecutorMode(d['executorMode']) ? d['executorMode'] : null,
   };
 };
 

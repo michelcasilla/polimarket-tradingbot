@@ -1,4 +1,5 @@
 import { Badge, Button, Card, Space, Switch, Tag, Typography } from 'antd';
+import { Flex } from 'antd/es';
 
 const { Title, Text } = Typography;
 
@@ -33,8 +34,8 @@ export const DashboardHeader = ({
   onResetFilters,
 }: DashboardHeaderProps) => (
   <Card className="compact-card">
-    <Space direction="horizontal" size={8} style={{ width: '100%' }}>
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Flex>
+      <Flex flex={1} vertical>
         <Title level={3} style={{ margin: 0 }}>
           Polymarket HFT Dashboard
         </Title>
@@ -61,8 +62,8 @@ export const DashboardHeader = ({
             </Button>
           </Space>
         </div>
-      </Space>
-      <Space direction="vertical" size={4} align="end" style={{ width: '100%' }}>
+      </Flex>
+      <Flex align="end" justify='center'>
         <Space size={10} wrap>
           <Tag color="green">Wins: {wins}</Tag>
           <Tag color="red">Losses: {losses}</Tag>
@@ -72,7 +73,7 @@ export const DashboardHeader = ({
           <Switch size="small" checked={liveMode} onChange={onLiveModeChange} />
           <Text type="secondary">Live</Text>
         </Space>
-      </Space>
-    </Space>
+      </Flex>
+    </Flex>
   </Card>
 );

@@ -13,6 +13,8 @@ import {
   type CircuitBreakerEvent,
   type ExecutionOrder,
   type ExecutionResult,
+  type ExecutorControlCommand,
+  type ExecutorStatusEvent,
   type OrderBookSnapshot,
 } from '@polymarket-bot/contracts';
 import { createLogger } from '@polymarket-bot/logger';
@@ -119,7 +121,8 @@ const main = async (): Promise<void> => {
 
   const publishResult = async (result: ExecutionResult): Promise<void> => {
     try {
-      await bus.publish(Channels.executorResults, result);
+      const payload: ExecutionResult = { ...result, executorMode: mode };
+      await bus.publish(Channels.executorResults, payload);
       resultsPublished += 1;
       lastResultAt = Date.now();
       logger.info(

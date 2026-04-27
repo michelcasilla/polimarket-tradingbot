@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# Local dev stack: Redis + 4 bots + dashboard gateway + dashboard placeholder.
+# Local dev stack: Redis + 4 bots + dashboard gateway.
+# SPA nginx (puerto 8080): solo con perfil "static" — ver README "Desarrollo local".
 # Designed to mirror the production AWS Dublín deployment (Plan 1, infra/aws-dublin).
 # ---------------------------------------------------------------------------
 
@@ -125,6 +126,8 @@ services:
       - '7010:7010'
 
   dashboard:
+    profiles:
+      - static
     container_name: polymarket-dashboard
     build:
       context: .

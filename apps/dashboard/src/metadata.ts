@@ -4,6 +4,7 @@ export interface MarketMetadataView {
   marketId: string;
   question: string;
   slug: string;
+  eventSlug: string | null;
   category: string | null;
   endDateIso: string | null;
   active: boolean;
@@ -34,6 +35,7 @@ export const extractMetadata = (event: GatewayEvent): MarketMetadataView | null 
     marketId,
     question: asString(d['question']) ?? marketId,
     slug: asString(d['slug']) ?? '',
+    eventSlug: asString(d['eventSlug']),
     category: asString(d['category']),
     endDateIso: asString(d['endDateIso']),
     active: asBool(d['active'], true),

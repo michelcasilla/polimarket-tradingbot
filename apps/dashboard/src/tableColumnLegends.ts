@@ -48,6 +48,7 @@ export const EXECUTION_TABLE_LEGEND: readonly ColumnLegendRow[] = [
   { column: 'Filled', meaning: 'Filled size vs requested size for this order update.' },
   { column: 'Avg Px', meaning: 'Volume-weighted average fill when filled; limit price hint when not filled.' },
   { column: 'Fees', meaning: 'Cumulative fees in USDC attributed to this result row.' },
+  { column: 'Result', meaning: 'Quick win/loss indicator: ▲ green = positive PnL, ▼ red = negative, = neutral, — not yet evaluated.' },
   { column: 'PnL (mtm)', meaning: 'Mark-to-market PnL vs current best bid/ask snapshot minus fees (dashboard calc).' },
   { column: 'Reason', meaning: 'Human error or signal reason text when the executor provides it.' },
   { column: 'Age / TTL', meaning: 'Time since update; for PLACED orders shows remaining TTL until expiry.' },

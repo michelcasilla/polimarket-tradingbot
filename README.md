@@ -62,7 +62,15 @@ bun test
 docker compose up --build
 ```
 
-Levanta Redis + los 4 bots + dashboard-gateway. El dashboard React (Plan 6) se ejecuta aparte con `bun run dev` desde `apps/dashboard/`.
+Levanta Redis + los 4 bots + `dashboard-gateway` (WebSocket en el host, p. ej. puerto **7010**). El contenedor **nginx** del dashboard estático (puerto **8080**) no arranca por defecto; para esa build de producción usa `docker compose --profile static up --build`.
+
+**Live reload (Vite):** con el stack arriba, en otra terminal:
+
+```bash
+bun run dev:dashboard
+```
+
+Abre **http://localhost:5173** (HMR). Equivale a `bun run --cwd apps/dashboard dev`.
 
 ## Deploy a AWS Dublín
 

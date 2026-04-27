@@ -51,7 +51,7 @@ export const GatewayEventStreamCard = ({
         <Result
           status="info"
           title="Event stream idle"
-          subTitle="The live event table is off until you start listening. That skips filtering and rendering high-volume book traffic so the rest of the dashboard stays lighter."
+          subTitle="The live event table is off until you start listening. That skips filtering and rendering high-volume book traffic so the rest of the dashboard stays lighter. After you listen, use PAUSE in the card header to stop again."
           extra={
             <Button type="primary" size="large" onClick={() => onListeningChange(true)}>
               LISTEN
@@ -63,12 +63,16 @@ export const GatewayEventStreamCard = ({
   }
 
   return (
-    <Card title={cardTitle(columnLegend)}>
+    <Card
+      title={cardTitle(columnLegend)}
+      extra={
+        <Button danger type="primary" onClick={() => onListeningChange(false)}>
+          PAUSE
+        </Button>
+      }
+    >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Space wrap align="center">
-          <Button size="small" onClick={() => onListeningChange(false)}>
-            Pause stream
-          </Button>
           <Segmented<StreamScope>
             options={[
               { label: 'All', value: 'all' },

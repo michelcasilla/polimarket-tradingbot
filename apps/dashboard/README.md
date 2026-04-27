@@ -13,6 +13,15 @@ Interfaz React + Ant Design para monitoreo operativo en tiempo real del ecosiste
 - WebSocket: `ws://localhost:7010/ws` (configurable con `VITE_DASHBOARD_WS_URL`).
 
 ## Ejecutar local
+
+Desde la raíz del monorepo:
+
+```bash
+bun run dev:dashboard
+```
+
+O desde este directorio:
+
 ```bash
 bun run --cwd apps/dashboard dev
 ```

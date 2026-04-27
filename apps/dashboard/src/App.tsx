@@ -1,4 +1,4 @@
-import { Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
 import {
@@ -32,7 +32,12 @@ import {
 import { isStale, liveEdgeBps, type StrategistSignal } from './signals';
 import { type OracleSignalView } from './oracle';
 import { type MarketMetadataView } from './metadata';
-import { computeLivePnlUsdc, type ExecutionResultView, type ExecutionStatus } from './execution';
+import {
+  computeLivePnlUsdc,
+  type ExecutionResultView,
+  type ExecutionStatus,
+  type ExecutorRunMode,
+} from './execution';
 import {
   EXECUTION_TABLE_LEGEND,
   GATEWAY_EVENT_TABLE_LEGEND,
@@ -99,20 +104,42 @@ const reasonColors: Record<string, string> = {
   MANUAL: 'default',
 };
 
+const polymarketEventUrl = (slug: string): string => `https://polymarket.com/event/${slug}`;
+
+/**
+ * Polymarket's website resolves URLs by **event** slug, not by market slug.
+ * For multi-outcome events the per-market slug 404s ("Oops...we didn't
+ * forecast this"). Always prefer `eventSlug` and fall back to `slug` only
+ * for legacy single-market events where they coincide.
+ */
+const resolveMarketHref = (meta: MarketMetadataView | undefined): string | null => {
+  if (!meta) return null;
+  if (meta.eventSlug) return polymarketEventUrl(meta.eventSlug);
+  if (meta.slug) return polymarketEventUrl(meta.slug);
+  return null;
+};
+
 const buildSignalColumns = (
   snapshots: MarketSnapshot[],
+  metadataMap: Map<string, MarketMetadataView>,
   now: number,
 ): ColumnsType<StrategistSignal> => [
   {
     title: 'Market',
     key: 'marketId',
-    render: (_: unknown, record) => (
-      <Tooltip title={record.marketId}>
-        <Tag className="mono" color="geekblue">
-          {truncateId(record.marketId)}
-        </Tag>
-      </Tooltip>
-    ),
+    render: (_: unknown, record) => {
+      const meta = metadataMap.get(record.marketId);
+      const href = resolveMarketHref(meta);
+      return (
+        <MarketLineWithFicha
+          marketId={record.marketId}
+          meta={meta}
+          polymarketHref={href}
+          textStrong={false}
+          maxLabelWidth={260}
+        />
+      );
+    },
   },
   {
     title: 'Outcome',
@@ -330,8 +357,6 @@ const formatDurationMs = (ms: number): string => {
   return `${(ms / 3_600_000).toFixed(1)}h`;
 };
 
-const polymarketEventUrl = (slug: string): string => `https://polymarket.com/event/${slug}`;
-
 const buildExecutionColumns = (
   metadataMap: Map<string, MarketMetadataView>,
   snapshots: MarketSnapshot[],
@@ -340,9 +365,9 @@ const buildExecutionColumns = (
   {
     title: 'Status',
     key: 'status',
-    width: 130,
+    width: 200,
     render: (_: unknown, record) => (
-      <Space direction="vertical" size={2} style={{ rowGap: 0 }}>
+      <Space direction="horizontal" size={2} style={{ rowGap: 2 }}>
         <Tag color={executionStatusColors[record.status]}>{record.status}</Tag>
         {record.side && (
           <Tag
@@ -380,7 +405,7 @@ const buildExecutionColumns = (
     key: 'marketId',
     render: (_: unknown, record) => {
       const meta = metadataMap.get(record.marketId);
-      const href = meta?.slug ? polymarketEventUrl(meta.slug) : null;
+      const href = resolveMarketHref(meta);
       return (
         <MarketLineWithFicha
           marketId={record.marketId}
@@ -457,6 +482,41 @@ const buildExecutionColumns = (
         <span className="mono" style={{ color: muted ? 'rgba(255,255,255,0.45)' : undefined }}>
           ${value.toFixed(4)}
         </span>
+      );
+    },
+  },
+  {
+    title: 'Result',
+    key: 'result',
+    align: 'center',
+    width: 80,
+    render: (_: unknown, record) => {
+      const pnl = computeLivePnlUsdc(record, snapshots);
+      if (pnl === null) {
+        return (
+          <Tooltip title="Not evaluated (no fill or no live mark)">
+            <span className="mono" style={{ color: 'rgba(255,255,255,0.35)' }}>—</span>
+          </Tooltip>
+        );
+      }
+      if (pnl > 0) {
+        return (
+          <Tooltip title="Winning trade (mark-to-market positive)">
+            <span className="mono" style={{ color: '#52c41a', fontWeight: 700, fontSize: 14 }}>▲</span>
+          </Tooltip>
+        );
+      }
+      if (pnl < 0) {
+        return (
+          <Tooltip title="Losing trade (mark-to-market negative)">
+            <span className="mono" style={{ color: '#ff4d4f', fontWeight: 700, fontSize: 14 }}>▼</span>
+          </Tooltip>
+        );
+      }
+      return (
+        <Tooltip title="Even (mark-to-market = 0)">
+          <span className="mono" style={{ color: 'rgba(255,255,255,0.55)' }}>=</span>
+        </Tooltip>
       );
     },
   },
@@ -558,7 +618,7 @@ const buildMarketColumns = (
     width: 360,
     render: (_: unknown, record) => {
       const meta = metadataMap.get(record.marketId);
-      const href = meta?.slug ? polymarketEventUrl(meta.slug) : null;
+      const href = resolveMarketHref(meta);
       return (
         <MarketLineWithFicha
           marketId={record.marketId}
@@ -676,7 +736,10 @@ const App = () => {
     totalReceived,
   });
 
-  const signalColumns = useMemo(() => buildSignalColumns(snapshots, now), [snapshots, now]);
+  const signalColumns = useMemo(
+    () => buildSignalColumns(snapshots, metadataMap, now),
+    [snapshots, metadataMap, now],
+  );
   const oracleColumns = useMemo(() => buildOracleColumns(now), [now]);
   const marketColumns = useMemo(() => buildMarketColumns(metadataMap), [metadataMap]);
   const executionColumns = useMemo(
@@ -685,6 +748,30 @@ const App = () => {
   );
   const [uiLiveMode, setUiLiveMode] = useState(false);
   const [gatewayStreamListening, setGatewayStreamListening] = useState(false);
+  const [executionModeFilter, setExecutionModeFilter] = useState<ExecutorRunMode>('simulation');
+
+  const filteredExecutions = useMemo(
+    () =>
+      executions.filter(
+        (e) => (e.executorMode ?? 'simulation') === executionModeFilter,
+      ),
+    [executions, executionModeFilter],
+  );
+
+  const executionCardMetrics = useMemo(() => {
+    let fills = 0;
+    let sum = 0;
+    let counted = 0;
+    for (const e of filteredExecutions) {
+      if (e.status === 'FILLED') fills += 1;
+      const pnl = computeLivePnlUsdc(e, snapshots);
+      if (pnl !== null) {
+        sum += pnl;
+        counted += 1;
+      }
+    }
+    return { fillCount: fills, livePnlUsdc: { sum, counted } };
+  }, [filteredExecutions, snapshots]);
 
   const { channelOptions, filteredEvents } = useGatewayEventFilters(
     gatewayStreamListening ? events : EMPTY_GATEWAY_EVENTS,
@@ -793,22 +880,38 @@ const App = () => {
           title="Execution Results (bot-executor)"
           columnLegend={<ColumnLegendPopover label="Execution columns" rows={EXECUTION_TABLE_LEGEND} />}
           extra={
-            <Text type="secondary">
-              {executions.length === 0
-                ? 'Waiting for first execution result…'
-                : livePnlUsdc.counted === 0
-                  ? `${fillCount} fills · ${executions.length} recent results`
-                  : `${fillCount} fills · PnL ${formatPnl(livePnlUsdc.sum)} (${livePnlUsdc.counted} marked) · ${executions.length} recent`}
-            </Text>
+            <Space size={8} align="center" wrap={false}>
+              <Tooltip title="Filter by mode the executor stamped on each result. Older events without a tag count as Simulation.">
+                <Switch
+                  checked={executionModeFilter === 'live'}
+                  onChange={(checked) => setExecutionModeFilter(checked ? 'live' : 'simulation')}
+                  checkedChildren="Live"
+                  unCheckedChildren="Sim"
+                />
+              </Tooltip>
+              <Text type="secondary">
+                {executions.length === 0
+                  ? 'Waiting for first execution result…'
+                  : filteredExecutions.length === 0
+                    ? `No rows for ${executionModeFilter === 'live' ? 'Live' : 'Simulation'} · ${executions.length} total in buffer`
+                    : executionCardMetrics.livePnlUsdc.counted === 0
+                      ? `${executionCardMetrics.fillCount} fills · ${filteredExecutions.length} recent results`
+                      : `${executionCardMetrics.fillCount} fills · PnL ${formatPnl(executionCardMetrics.livePnlUsdc.sum)} (${executionCardMetrics.livePnlUsdc.counted} marked) · ${filteredExecutions.length} recent`}
+              </Text>
+            </Space>
           }
-          isEmpty={executions.length === 0}
-          emptyDescription="No execution results yet. Publish an order to executor:orders to test."
+          isEmpty={filteredExecutions.length === 0}
+          emptyDescription={
+            executions.length === 0
+              ? 'No execution results yet. Publish an order to executor:orders to test.'
+              : `No execution results for ${executionModeFilter === 'live' ? 'Live' : 'Simulation'}. Switch modes or wait for matching executor events.`
+          }
         >
           <Table
             className="compact-table"
             rowKey={(record) => `${record.orderId}-${record.status}-${record.timestamp}`}
             columns={executionColumns}
-            dataSource={executions}
+            dataSource={filteredExecutions}
             pagination={false}
             scroll={{ x: 1100, y: 320 }}
             size="small"

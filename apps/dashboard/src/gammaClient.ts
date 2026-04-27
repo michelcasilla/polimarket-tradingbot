@@ -20,12 +20,18 @@ export const gammaMarketJsonToView = (raw: Record<string, unknown>, receivedAt: 
   const question = typeof raw.question === 'string' ? raw.question : marketId;
   const slug = typeof raw.slug === 'string' ? raw.slug : '';
   let category: string | null = null;
+  let eventSlug: string | null = null;
   const events = raw.events;
   if (Array.isArray(events) && events.length > 0) {
     const e0 = events[0];
     if (e0 && typeof e0 === 'object') {
       const t = (e0 as Record<string, unknown>)['ticker'];
       if (typeof t === 'string') category = t;
+      // Event slug is required for `polymarket.com/event/<slug>` URLs.
+      // The per-market `slug` does not resolve on the website when the
+      // market belongs to a multi-outcome event.
+      const es = (e0 as Record<string, unknown>)['slug'];
+      if (typeof es === 'string' && es.length > 0) eventSlug = es;
     }
   }
   const endRaw = raw.endDateIso ?? raw.endDate;
@@ -47,6 +53,7 @@ export const gammaMarketJsonToView = (raw: Record<string, unknown>, receivedAt: 
     marketId,
     question,
     slug,
+    eventSlug,
     category,
     endDateIso,
     active,
