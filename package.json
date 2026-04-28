@@ -33,6 +33,7 @@
   },
   "packageManager": "bun@1.1.30",
   "dependencies": {
+    "@ant-design/icons": "^6.2.2",
     "@polymarket/clob-client-v2": "^1.0.2",
     "ethers": "^5.8.0",
     "viem": "^2.48.4"

@@ -9,6 +9,8 @@ export interface ReconcilerConfig {
   logger: Logger;
   liveAdapter: LiveAdapter;
   getLocalOpenOrderIds: () => string[];
+  onRemoteOrderDiscovered?: (orderId: string) => Promise<void>;
+  onRemoteOrderMissing?: (orderId: string) => Promise<void>;
   onRemoteTrade?: (trade: Record<string, unknown>) => Promise<void>;
 }
 
@@ -52,6 +54,16 @@ export const createReconciler = (cfg: ReconcilerConfig): Reconciler => {
 
       const missingLocalOrderIds = [...remoteIds].filter((id) => !localIds.has(id));
       const orphanLocalOrderIds = [...localIds].filter((id) => !remoteIds.has(id));
+      if (cfg.onRemoteOrderDiscovered) {
+        for (const id of missingLocalOrderIds) {
+          await cfg.onRemoteOrderDiscovered(id);
+        }
+      }
+      if (cfg.onRemoteOrderMissing) {
+        for (const id of orphanLocalOrderIds) {
+          await cfg.onRemoteOrderMissing(id);
+        }
+      }
 
       const event: ReconciliationEvent = {
         checkedAt: Date.now(),

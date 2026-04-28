@@ -25,6 +25,7 @@ import { createLiveAdapter, type LiveAdapter } from './liveAdapter';
 import { createReconciler } from './reconciler';
 import { createPositionBook } from './positionBook';
 import { createAdverseSelectionDetector } from './adverseSelection';
+import { createOrderLedger } from './orderLedger';
 
 /**
  * Bot Executor (Transaction Manager).
@@ -134,6 +135,7 @@ const main = async (): Promise<void> => {
   const liveAdapter = mode === 'live' ? buildLiveAdapter() : null;
   if (liveAdapter) await liveAdapter.init();
   const positionBook = createPositionBook({ redisUrl: env.REDIS_URL });
+  const orderLedger = createOrderLedger({ redisUrl: env.REDIS_URL });
 
   let circuitBroadcasted = false;
   let resultsPublished = 0;
@@ -145,6 +147,10 @@ const main = async (): Promise<void> => {
   let pausedSince = 0;
   let resumeSince = Date.now();
   const localLiveOpenOrderIds = new Set<string>();
+  if (mode === 'live') {
+    const persisted = await orderLedger.load();
+    for (const row of persisted) localLiveOpenOrderIds.add(row.orderId);
+  }
   const latestMids = new Map<string, number>();
   const adverseSelection = createAdverseSelectionDetector({
     bus,
@@ -206,6 +212,17 @@ const main = async (): Promise<void> => {
         const position = await positionBook.applyFill(fill);
         await bus.publish(Channels.executorPositions, position);
         adverseSelection.ingestFill(fill, result.averagePrice);
+      }
+      if (
+        mode === 'live' &&
+        (result.status === 'FILLED' ||
+          result.status === 'CANCELLED' ||
+          result.status === 'EXPIRED' ||
+          result.status === 'REJECTED' ||
+          result.status === 'ERROR')
+      ) {
+        localLiveOpenOrderIds.delete(result.orderId);
+        await orderLedger.markClosed(result.orderId);
       }
     } catch (err) {
       publishErrors += 1;
@@ -280,7 +297,10 @@ const main = async (): Promise<void> => {
     if (mode === 'live' && liveAdapter) {
       const result = await liveAdapter.submit(order);
       await publishResult(result);
-      if (result.status === 'PLACED') localLiveOpenOrderIds.add(result.orderId);
+      if (result.status === 'PLACED') {
+        localLiveOpenOrderIds.add(result.orderId);
+        await orderLedger.markPlaced(result.orderId, result.marketId, 'LOCAL');
+      }
       return;
     }
     const { immediate, deferred } = simulator.submit(order);
@@ -300,7 +320,10 @@ const main = async (): Promise<void> => {
     if (mode === 'live' && liveAdapter) {
       const result = await liveAdapter.cancel(cancel);
       await publishResult(result);
-      if (result.status === 'CANCELLED') localLiveOpenOrderIds.delete(cancel.orderId);
+      if (result.status === 'CANCELLED') {
+        localLiveOpenOrderIds.delete(cancel.orderId);
+        await orderLedger.markClosed(cancel.orderId);
+      }
       return;
     }
     const result = simulator.cancel(cancel.orderId);
@@ -356,6 +379,14 @@ const main = async (): Promise<void> => {
           logger,
           liveAdapter,
           getLocalOpenOrderIds: () => Array.from(localLiveOpenOrderIds),
+          onRemoteOrderDiscovered: async (orderId) => {
+            localLiveOpenOrderIds.add(orderId);
+            await orderLedger.markPlaced(orderId, 'unknown', 'REMOTE');
+          },
+          onRemoteOrderMissing: async (orderId) => {
+            localLiveOpenOrderIds.delete(orderId);
+            await orderLedger.markClosed(orderId);
+          },
         })
       : null;
   reconciler?.start();
@@ -417,6 +448,7 @@ const main = async (): Promise<void> => {
     reconciler?.stop();
     await bus.shutdown();
     await positionBook.shutdown();
+    await orderLedger.shutdown();
     if (liveAdapter) await liveAdapter.shutdown();
     await health.stop();
     process.exit(0);

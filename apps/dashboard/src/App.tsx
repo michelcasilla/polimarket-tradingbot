@@ -1,4 +1,24 @@
-import { Button, message, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
+import {
+  Button,
+  Layout,
+  Menu,
+  message,
+  Popconfirm,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  theme,
+} from 'antd';
+import {
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  DashboardOutlined,
+  TableOutlined,
+  FileTextOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
 import {
@@ -52,6 +72,7 @@ import {
 import { cancelOrder, panicExecutor, resumeExecutor } from './executorControl';
 
 const { Text } = Typography;
+const { Header, Sider, Content } = Layout;
 
 const eventColumns: ColumnsType<GatewayEvent> = [
   {
@@ -795,6 +816,11 @@ const App = () => {
   const [uiLiveMode, setUiLiveMode] = useState(false);
   const [gatewayStreamListening, setGatewayStreamListening] = useState(false);
   const [executionModeFilter, setExecutionModeFilter] = useState<ExecutorRunMode>('simulation');
+  const [activeView, setActiveView] = useState<'dashboard' | 'trades' | 'logs'>('dashboard');
+  const [collapsed, setCollapsed] = useState(false);
+  const {
+    token: { colorBgContainer, borderRadiusLG },
+  } = theme.useToken();
 
   const filteredExecutions = useMemo(
     () =>
@@ -873,9 +899,141 @@ const App = () => {
     return Array.from(agg.entries()).map(([reason, value]) => ({ reason, ...value }));
   }, [executions, snapshots]);
 
+  const historicalTrades = useMemo(
+    () =>
+      executions
+        .filter((e) => e.status === 'FILLED' && e.filledSize > 0)
+        .map((e) => ({ ...e, pnl: computeLivePnlUsdc(e, snapshots) }))
+        .sort((a, b) => b.timestamp - a.timestamp),
+    [executions, snapshots],
+  );
+
+  const tradeHistoryColumns: ColumnsType<(ExecutionResultView & { pnl: number | null })> = useMemo(
+    () => [
+      {
+        title: 'Time',
+        key: 'timestamp',
+        width: 110,
+        render: (_: unknown, record) => (
+          <span className="mono">{new Date(record.timestamp).toLocaleTimeString()}</span>
+        ),
+      },
+      {
+        title: 'Market',
+        key: 'marketId',
+        render: (_: unknown, record) => {
+          const meta = metadataMap.get(record.marketId);
+          const href = resolveMarketHref(meta);
+          return (
+            <MarketLineWithFicha
+              marketId={record.marketId}
+              meta={meta}
+              polymarketHref={href}
+              textStrong={false}
+              maxLabelWidth={320}
+            />
+          );
+        },
+      },
+      {
+        title: 'Side',
+        key: 'side',
+        width: 110,
+        render: (_: unknown, record) => (
+          <Tag color={record.side === 'BUY' ? 'green' : 'volcano'}>
+            {record.side ?? '—'} {record.outcome ?? ''}
+          </Tag>
+        ),
+      },
+      {
+        title: 'Size',
+        key: 'size',
+        align: 'right',
+        width: 100,
+        render: (_: unknown, record) => <span className="mono">{record.filledSize.toFixed(2)}</span>,
+      },
+      {
+        title: 'Avg Px',
+        key: 'avg',
+        align: 'right',
+        width: 100,
+        render: (_: unknown, record) => (
+          <span className="mono">{record.averagePrice !== null ? formatProb(record.averagePrice) : '—'}</span>
+        ),
+      },
+      {
+        title: 'Fees',
+        key: 'fees',
+        align: 'right',
+        width: 90,
+        render: (_: unknown, record) => <span className="mono">${(record.fees ?? 0).toFixed(4)}</span>,
+      },
+      {
+        title: 'PnL',
+        key: 'pnl',
+        align: 'right',
+        width: 120,
+        render: (_: unknown, record) => {
+          if (record.pnl === null) return <span className="mono">—</span>;
+          const color = record.pnl > 0 ? '#52c41a' : record.pnl < 0 ? '#ff4d4f' : undefined;
+          return (
+            <span className="mono" style={{ color, fontWeight: 600 }}>
+              {formatPnl(record.pnl)}
+            </span>
+          );
+        },
+      },
+      {
+        title: 'Result',
+        key: 'result',
+        width: 90,
+        align: 'center',
+        render: (_: unknown, record) => {
+          if (record.pnl === null) return <span className="mono">—</span>;
+          if (record.pnl > 0) return <span style={{ color: '#52c41a', fontWeight: 700 }}>WIN</span>;
+          if (record.pnl < 0) return <span style={{ color: '#ff4d4f', fontWeight: 700 }}>LOSS</span>;
+          return <span className="mono">EVEN</span>;
+        },
+      },
+    ],
+    [metadataMap],
+  );
+
   return (
-    <div className="dashboard-shell">
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Layout className="dashboard-shell">
+      <Sider trigger={null} collapsible collapsed={collapsed}>
+        <div className="dashboard-logo">{collapsed ? 'PB' : 'PoliPilot'}</div>
+        <Menu
+          theme="dark"
+          mode="inline"
+          selectedKeys={[activeView]}
+          onClick={(info) => setActiveView(info.key as 'dashboard' | 'trades' | 'logs')}
+          items={[
+            { key: 'dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
+            { key: 'trades', icon: <TableOutlined />, label: 'Trades' },
+            { key: 'logs', icon: <FileTextOutlined />, label: 'Logs' },
+          ]}
+        />
+      </Sider>
+      <Layout>
+        <Header style={{ padding: 0, background: colorBgContainer }}>
+          <Button
+            type="text"
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            onClick={() => setCollapsed(!collapsed)}
+            style={{ fontSize: '16px', width: 64, height: 64 }}
+          />
+        </Header>
+        <Content
+          style={{
+            margin: '16px',
+            padding: 16,
+            minHeight: 280,
+            background: colorBgContainer,
+            borderRadius: borderRadiusLG,
+          }}
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <DashboardHeader
           status={status}
           wsUrl={wsUrl}
@@ -887,9 +1045,11 @@ const App = () => {
           onResetFilters={resetFilters}
         />
 
-        <MetricsStrip metrics={metrics} />
+          <MetricsStrip metrics={metrics} />
 
-        <DataTableCard
+          {activeView === 'dashboard' && (
+            <>
+              <DataTableCard
           title="Top Markets (bot-tape-reader)"
           columnLegend={<ColumnLegendPopover label="Top Markets columns" rows={MARKET_TABLE_LEGEND} />}
           extra={
@@ -912,9 +1072,9 @@ const App = () => {
             size="small"
             virtual
           />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="Strategist Signals (bot-strategist)"
           columnLegend={<ColumnLegendPopover label="Strategist columns" rows={SIGNAL_TABLE_LEGEND} />}
           extra={
@@ -942,9 +1102,9 @@ const App = () => {
             virtual
             rowClassName={(record) => (isStale(record, now) ? 'row-stale' : '')}
           />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="Oracle Signals (bot-oracle)"
           columnLegend={<ColumnLegendPopover label="Oracle columns" rows={ORACLE_TABLE_LEGEND} />}
           extra={
@@ -967,9 +1127,9 @@ const App = () => {
             size="small"
             virtual
           />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="Execution Results (bot-executor)"
           columnLegend={<ColumnLegendPopover label="Execution columns" rows={EXECUTION_TABLE_LEGEND} />}
           extra={
@@ -1061,9 +1221,9 @@ const App = () => {
             size="small"
             virtual
           />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="Positions (bot-executor)"
           extra={
             <Text type="secondary">
@@ -1076,9 +1236,9 @@ const App = () => {
           emptyDescription="No position updates yet. Executor publishes `executor:positions` after fills."
         >
           <PositionsTable positions={positions} />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="Maker Rewards (estimated)"
           extra={<Text type="secondary">{rewardScores.length} recent score points</Text>}
           isEmpty={rewardScores.length === 0}
@@ -1111,18 +1271,18 @@ const App = () => {
               },
             ]}
           />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="Inventory Heatmap"
           extra={<Text type="secondary">Exposure by market/outcome</Text>}
           isEmpty={positions.length === 0}
           emptyDescription="No inventory to render."
         >
           <InventoryHeatmap positions={positions} />
-        </DataTableCard>
+              </DataTableCard>
 
-        <DataTableCard
+              <DataTableCard
           title="PnL Attribution (by reason)"
           extra={<Text type="secondary">{pnlAttribution.length} strategy buckets</Text>}
           isEmpty={pnlAttribution.length === 0}
@@ -1147,24 +1307,57 @@ const App = () => {
               },
             ]}
           />
-        </DataTableCard>
+              </DataTableCard>
 
-        <GatewayEventStreamCard
-          listening={gatewayStreamListening}
-          onListeningChange={setGatewayStreamListening}
-          scope={scope}
-          onScopeChange={setScope}
-          channelOptions={channelOptions}
-          channelFilter={channelFilter}
-          onChannelFilterChange={setChannelFilter}
-          search={search}
-          onSearchChange={setSearch}
-          filteredEvents={filteredEvents}
-          columns={eventColumns}
-          columnLegend={<ColumnLegendPopover label="Event stream columns" rows={GATEWAY_EVENT_TABLE_LEGEND} />}
-        />
-      </Space>
-    </div>
+            </>
+          )}
+
+          {activeView === 'trades' && (
+            <DataTableCard
+              title="Trades History"
+              extra={
+                <Text type="secondary">
+                  {historicalTrades.length} trades en buffer · {historicalTrades.filter((t) => (t.pnl ?? 0) > 0).length}{' '}
+                  wins · {historicalTrades.filter((t) => (t.pnl ?? 0) < 0).length} losses
+                </Text>
+              }
+              isEmpty={historicalTrades.length === 0}
+              emptyDescription="Aun no hay trades filled en el historial."
+            >
+              <Table
+                className="compact-table"
+                rowKey={(record) => `${record.orderId}-${record.timestamp}`}
+                columns={tradeHistoryColumns}
+                dataSource={historicalTrades}
+                pagination={{ pageSize: 25, showSizeChanger: false }}
+                scroll={{ x: 1100, y: 640 }}
+                size="small"
+              />
+            </DataTableCard>
+          )}
+
+          {activeView === 'logs' && (
+            <GatewayEventStreamCard
+              listening={gatewayStreamListening}
+              onListeningChange={setGatewayStreamListening}
+              scope={scope}
+              onScopeChange={setScope}
+              channelOptions={channelOptions}
+              channelFilter={channelFilter}
+              onChannelFilterChange={setChannelFilter}
+              search={search}
+              onSearchChange={setSearch}
+              filteredEvents={filteredEvents}
+              columns={eventColumns}
+              columnLegend={
+                <ColumnLegendPopover label="Event stream columns" rows={GATEWAY_EVENT_TABLE_LEGEND} />
+              }
+            />
+          )}
+          </Space>
+        </Content>
+      </Layout>
+    </Layout>
   );
 };
 

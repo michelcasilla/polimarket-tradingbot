@@ -20,10 +20,46 @@ body {
 }
 
 .dashboard-shell {
-  max-width: 98vw;
-  margin: 0 auto;
-  padding: 12px;
+  min-height: 100vh;
 }
+
+.dashboard-logo {
+  height: 32px;
+  margin: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(232, 234, 237, 0.95);
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  font-size: 13px;
+}
+
+.dashboard-shell .ant-layout-sider {
+  background: #0b0f14 !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dashboard-shell .ant-layout-sider .ant-menu-dark {
+  background: #0b0f14;
+}
+
+.dashboard-shell .ant-layout-sider .ant-menu-dark .ant-menu-item {
+  color: rgba(232, 234, 237, 0.85);
+}
+
+.dashboard-shell .ant-layout-sider .ant-menu-dark .ant-menu-item:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dashboard-shell .ant-layout-sider .ant-menu-dark .ant-menu-item-selected {
+  color: #ffffff;
+  background: rgba(145, 202, 255, 0.2);
+}
+
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
