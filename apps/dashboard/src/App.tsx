@@ -18,6 +18,11 @@ import {
   DashboardOutlined,
   TableOutlined,
   FileTextOutlined,
+  AppstoreOutlined,
+  RadarChartOutlined,
+  PlayCircleOutlined,
+  SafetyCertificateOutlined,
+  DollarOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
@@ -816,11 +821,31 @@ const App = () => {
   const [uiLiveMode, setUiLiveMode] = useState(false);
   const [gatewayStreamListening, setGatewayStreamListening] = useState(false);
   const [executionModeFilter, setExecutionModeFilter] = useState<ExecutorRunMode>('simulation');
-  const [activeView, setActiveView] = useState<'dashboard' | 'trades' | 'logs'>('dashboard');
+  const [activeView, setActiveView] = useState<
+    'dashboard' | 'markets' | 'signals' | 'execution' | 'trades' | 'risk' | 'rewards' | 'logs'
+  >('dashboard');
   const [collapsed, setCollapsed] = useState(false);
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
+  const viewTitleMap: Record<
+    'dashboard' | 'markets' | 'signals' | 'execution' | 'trades' | 'risk' | 'rewards' | 'logs',
+    string
+  > = {
+    dashboard: 'Dashboard Overview',
+    markets: 'Markets',
+    signals: 'Signals',
+    execution: 'Execution',
+    trades: 'Trades',
+    risk: 'Risk',
+    rewards: 'Rewards',
+    logs: 'Logs',
+  };
+  const showMarkets = activeView === 'dashboard' || activeView === 'markets';
+  const showSignals = activeView === 'dashboard' || activeView === 'signals';
+  const showExecution = activeView === 'dashboard' || activeView === 'execution';
+  const showRisk = activeView === 'dashboard' || activeView === 'risk';
+  const showRewards = activeView === 'dashboard' || activeView === 'rewards';
 
   const filteredExecutions = useMemo(
     () =>
@@ -1007,22 +1032,45 @@ const App = () => {
           theme="dark"
           mode="inline"
           selectedKeys={[activeView]}
-          onClick={(info) => setActiveView(info.key as 'dashboard' | 'trades' | 'logs')}
+          onClick={(info) =>
+            setActiveView(
+              info.key as
+                | 'dashboard'
+                | 'markets'
+                | 'signals'
+                | 'execution'
+                | 'trades'
+                | 'risk'
+                | 'rewards'
+                | 'logs',
+            )
+          }
           items={[
             { key: 'dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
+            { key: 'markets', icon: <AppstoreOutlined />, label: 'Markets' },
+            { key: 'signals', icon: <RadarChartOutlined />, label: 'Signals' },
+            { key: 'execution', icon: <PlayCircleOutlined />, label: 'Execution' },
             { key: 'trades', icon: <TableOutlined />, label: 'Trades' },
+            { key: 'risk', icon: <SafetyCertificateOutlined />, label: 'Risk' },
+            { key: 'rewards', icon: <DollarOutlined />, label: 'Rewards' },
             { key: 'logs', icon: <FileTextOutlined />, label: 'Logs' },
           ]}
         />
       </Sider>
       <Layout>
         <Header style={{ padding: 0, background: colorBgContainer }}>
-          <Button
-            type="text"
-            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => setCollapsed(!collapsed)}
-            style={{ fontSize: '16px', width: 64, height: 64 }}
-          />
+          <div className="dashboard-header-bar">
+            <Button
+              type="text"
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={() => setCollapsed(!collapsed)}
+              style={{ fontSize: '16px', width: 64, height: 64 }}
+            />
+            <div className="dashboard-header-view">
+              <span className="dashboard-header-view-dot" />
+              <span>{viewTitleMap[activeView]}</span>
+            </div>
+          </div>
         </Header>
         <Content
           style={{
@@ -1047,9 +1095,8 @@ const App = () => {
 
           <MetricsStrip metrics={metrics} />
 
-          {activeView === 'dashboard' && (
-            <>
-              <DataTableCard
+          <>
+              {showMarkets && <DataTableCard
           title="Top Markets (bot-tape-reader)"
           columnLegend={<ColumnLegendPopover label="Top Markets columns" rows={MARKET_TABLE_LEGEND} />}
           extra={
@@ -1072,9 +1119,9 @@ const App = () => {
             size="small"
             virtual
           />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showSignals && <DataTableCard
           title="Strategist Signals (bot-strategist)"
           columnLegend={<ColumnLegendPopover label="Strategist columns" rows={SIGNAL_TABLE_LEGEND} />}
           extra={
@@ -1102,9 +1149,9 @@ const App = () => {
             virtual
             rowClassName={(record) => (isStale(record, now) ? 'row-stale' : '')}
           />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showSignals && <DataTableCard
           title="Oracle Signals (bot-oracle)"
           columnLegend={<ColumnLegendPopover label="Oracle columns" rows={ORACLE_TABLE_LEGEND} />}
           extra={
@@ -1127,9 +1174,9 @@ const App = () => {
             size="small"
             virtual
           />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showExecution && <DataTableCard
           title="Execution Results (bot-executor)"
           columnLegend={<ColumnLegendPopover label="Execution columns" rows={EXECUTION_TABLE_LEGEND} />}
           extra={
@@ -1221,9 +1268,9 @@ const App = () => {
             size="small"
             virtual
           />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showRisk && <DataTableCard
           title="Positions (bot-executor)"
           extra={
             <Text type="secondary">
@@ -1236,9 +1283,9 @@ const App = () => {
           emptyDescription="No position updates yet. Executor publishes `executor:positions` after fills."
         >
           <PositionsTable positions={positions} />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showRewards && <DataTableCard
           title="Maker Rewards (estimated)"
           extra={<Text type="secondary">{rewardScores.length} recent score points</Text>}
           isEmpty={rewardScores.length === 0}
@@ -1271,18 +1318,18 @@ const App = () => {
               },
             ]}
           />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showRisk && <DataTableCard
           title="Inventory Heatmap"
           extra={<Text type="secondary">Exposure by market/outcome</Text>}
           isEmpty={positions.length === 0}
           emptyDescription="No inventory to render."
         >
           <InventoryHeatmap positions={positions} />
-              </DataTableCard>
+              </DataTableCard>}
 
-              <DataTableCard
+              {showRewards && <DataTableCard
           title="PnL Attribution (by reason)"
           extra={<Text type="secondary">{pnlAttribution.length} strategy buckets</Text>}
           isEmpty={pnlAttribution.length === 0}
@@ -1307,10 +1354,9 @@ const App = () => {
               },
             ]}
           />
-              </DataTableCard>
+              </DataTableCard>}
 
             </>
-          )}
 
           {activeView === 'trades' && (
             <DataTableCard
