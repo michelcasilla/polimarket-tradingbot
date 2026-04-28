@@ -12,5 +12,6 @@ export type { MarketLineWithFichaProps } from './MarketLineWithFicha';
 export { MetricsStrip } from './MetricsStrip';
 export { PositionsTable } from './PositionsTable';
 export { InventoryHeatmap } from './InventoryHeatmap';
+export { TradesPnlChart } from './TradesPnlChart';
 export { isStreamScope, SCOPE_VALUES } from './streamTypes';
 export type { StreamScope } from './streamTypes';

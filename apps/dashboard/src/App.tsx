@@ -25,7 +25,7 @@ import {
   DollarOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   ColumnLegendPopover,
   DataTableCard,
@@ -50,6 +50,9 @@ import type { GatewayEvent } from './types';
 
 /** Stable empty list so `useGatewayEventFilters` skips work when the event stream UI is paused. */
 const EMPTY_GATEWAY_EVENTS: GatewayEvent[] = [];
+const TradesPnlChart = lazy(() =>
+  import('./atomic/TradesPnlChart').then((m) => ({ default: m.TradesPnlChart })),
+);
 import { useGatewaySocket } from './useGatewaySocket';
 import {
   formatProb,
@@ -1369,27 +1372,39 @@ const App = () => {
             </>
 
           {activeView === 'trades' && (
-            <DataTableCard
-              title="Trades History"
-              extra={
-                <Text type="secondary">
-                  {historicalTrades.length} trades en buffer · {historicalTrades.filter((t) => (t.pnl ?? 0) > 0).length}{' '}
-                  wins · {historicalTrades.filter((t) => (t.pnl ?? 0) < 0).length} losses
-                </Text>
-              }
-              isEmpty={historicalTrades.length === 0}
-              emptyDescription="Aun no hay trades filled en el historial."
-            >
-              <Table
-                className="compact-table"
-                rowKey={(record) => `${record.orderId}-${record.timestamp}`}
-                columns={tradeHistoryColumns}
-                dataSource={historicalTrades}
-                pagination={{ pageSize: 25, showSizeChanger: false }}
-                scroll={{ x: 1100, y: 640 }}
-                size="small"
-              />
-            </DataTableCard>
+            <>
+              <DataTableCard
+                title="Trades PnL Curve"
+                extra={<Text type="secondary">Highcharts</Text>}
+                isEmpty={historicalTrades.length === 0}
+                emptyDescription="No hay trades para graficar todavía."
+              >
+                <Suspense fallback={<Text type="secondary">Loading chart…</Text>}>
+                  <TradesPnlChart trades={historicalTrades} snapshots={snapshots} />
+                </Suspense>
+              </DataTableCard>
+              <DataTableCard
+                title="Trades History"
+                extra={
+                  <Text type="secondary">
+                    {historicalTrades.length} trades en buffer · {historicalTrades.filter((t) => (t.pnl ?? 0) > 0).length}{' '}
+                    wins · {historicalTrades.filter((t) => (t.pnl ?? 0) < 0).length} losses
+                  </Text>
+                }
+                isEmpty={historicalTrades.length === 0}
+                emptyDescription="Aun no hay trades filled en el historial."
+              >
+                <Table
+                  className="compact-table"
+                  rowKey={(record) => `${record.orderId}-${record.timestamp}`}
+                  columns={tradeHistoryColumns}
+                  dataSource={historicalTrades}
+                  pagination={{ pageSize: 25, showSizeChanger: false }}
+                  scroll={{ x: 1100, y: 640 }}
+                  size="small"
+                />
+              </DataTableCard>
+            </>
           )}
 
           {activeView === 'logs' && (

@@ -36,6 +36,8 @@
     "@ant-design/icons": "^6.2.2",
     "@polymarket/clob-client-v2": "^1.0.2",
     "ethers": "^5.8.0",
+    "highcharts": "^12.6.0",
+    "highcharts-react-official": "^3.2.3",
     "viem": "^2.48.4"
   }
 }
