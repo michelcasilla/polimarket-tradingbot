@@ -25,7 +25,7 @@ import {
   DollarOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ColumnLegendPopover,
   DataTableCard,
@@ -78,6 +78,36 @@ import { cancelOrder, panicExecutor, resumeExecutor } from './executorControl';
 
 const { Text } = Typography;
 const { Header, Sider, Content } = Layout;
+type DashboardView =
+  | 'dashboard'
+  | 'markets'
+  | 'signals'
+  | 'execution'
+  | 'trades'
+  | 'risk'
+  | 'rewards'
+  | 'logs';
+
+const VIEW_ROUTES: Record<DashboardView, string> = {
+  dashboard: '/dashboard',
+  markets: '/markets',
+  signals: '/signals',
+  execution: '/execution',
+  trades: '/trades',
+  risk: '/risk',
+  rewards: '/rewards',
+  logs: '/logs',
+};
+
+const ROUTE_TO_VIEW: Record<string, DashboardView> = Object.fromEntries(
+  Object.entries(VIEW_ROUTES).map(([view, route]) => [route, view as DashboardView]),
+) as Record<string, DashboardView>;
+
+const parseViewFromHash = (): DashboardView => {
+  const hash = window.location.hash || '#/dashboard';
+  const path = hash.startsWith('#') ? hash.slice(1) : hash;
+  return ROUTE_TO_VIEW[path] ?? 'dashboard';
+};
 
 const eventColumns: ColumnsType<GatewayEvent> = [
   {
@@ -821,9 +851,7 @@ const App = () => {
   const [uiLiveMode, setUiLiveMode] = useState(false);
   const [gatewayStreamListening, setGatewayStreamListening] = useState(false);
   const [executionModeFilter, setExecutionModeFilter] = useState<ExecutorRunMode>('simulation');
-  const [activeView, setActiveView] = useState<
-    'dashboard' | 'markets' | 'signals' | 'execution' | 'trades' | 'risk' | 'rewards' | 'logs'
-  >('dashboard');
+  const [activeView, setActiveView] = useState<DashboardView>(parseViewFromHash);
   const [collapsed, setCollapsed] = useState(false);
   const {
     token: { colorBgContainer, borderRadiusLG },
@@ -833,6 +861,19 @@ const App = () => {
   const showExecution = activeView === 'dashboard' || activeView === 'execution';
   const showRisk = activeView === 'dashboard' || activeView === 'risk';
   const showRewards = activeView === 'dashboard' || activeView === 'rewards';
+
+  useEffect(() => {
+    const onHashChange = () => setActiveView(parseViewFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    const targetHash = `#${VIEW_ROUTES[activeView]}`;
+    if (window.location.hash !== targetHash) {
+      window.history.replaceState(null, '', targetHash);
+    }
+  }, [activeView]);
 
   const filteredExecutions = useMemo(
     () =>
@@ -1019,19 +1060,7 @@ const App = () => {
           theme="dark"
           mode="inline"
           selectedKeys={[activeView]}
-          onClick={(info) =>
-            setActiveView(
-              info.key as
-                | 'dashboard'
-                | 'markets'
-                | 'signals'
-                | 'execution'
-                | 'trades'
-                | 'risk'
-                | 'rewards'
-                | 'logs',
-            )
-          }
+          onClick={(info) => setActiveView(info.key as DashboardView)}
           items={[
             { key: 'dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
             { key: 'markets', icon: <AppstoreOutlined />, label: 'Markets' },
