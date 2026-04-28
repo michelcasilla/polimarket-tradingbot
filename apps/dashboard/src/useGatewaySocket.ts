@@ -3,9 +3,10 @@ import type { GatewayEvent } from './types';
 
 const DEFAULT_WS_URL = 'ws://localhost:7010/ws';
 const DEFAULT_BUFFER = 250;
-const DEFAULT_RARE_BUFFER = 200;
+const DEFAULT_RARE_BUFFER = 5000;
 const FLUSH_INTERVAL_MS = 200;
 const RATE_WINDOW_MS = 1000;
+const RARE_STORAGE_KEY = 'polypilot.rareEvents.v1';
 
 /**
  * High-frequency channels — these can fire hundreds of times per second.
@@ -67,7 +68,16 @@ export const useGatewaySocket = (
 
   const [status, setStatus] = useState<GatewaySocketState['status']>('connecting');
   const [events, setEvents] = useState<GatewayEvent[]>([]);
-  const [rareEvents, setRareEvents] = useState<GatewayEvent[]>([]);
+  const [rareEvents, setRareEvents] = useState<GatewayEvent[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(RARE_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as GatewayEvent[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [eventsPerSecond, setEventsPerSecond] = useState(0);
   const [totalReceived, setTotalReceived] = useState(0);
 
@@ -144,9 +154,22 @@ export const useGatewaySocket = (
     };
   }, [wsUrl, bufferLimit, rareBufferLimit, flushIntervalMs]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RARE_STORAGE_KEY, JSON.stringify(rareEvents.slice(0, rareBufferLimit)));
+    } catch {
+      // Best-effort persistence only.
+    }
+  }, [rareEvents, rareBufferLimit]);
+
   const clearEvents = (): void => {
     setEvents([]);
     setRareEvents([]);
+    try {
+      window.localStorage.removeItem(RARE_STORAGE_KEY);
+    } catch {
+      // noop
+    }
     setTotalReceived(0);
   };
 

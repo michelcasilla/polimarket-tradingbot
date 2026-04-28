@@ -12,6 +12,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@ant-design/icons": "^6.2.2",
     "@polymarket-bot/contracts": "workspace:*",
     "antd": "^5.27.6",
     "react": "^18.3.1",

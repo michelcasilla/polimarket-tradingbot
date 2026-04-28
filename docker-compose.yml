@@ -121,9 +121,12 @@ services:
       HEALTH_PORT: '7005'
       HEALTH_PORT_DASHBOARD_GATEWAY: '7005'
       DASHBOARD_WS_PORT: '7010'
+      DASHBOARD_GATEWAY_DB_PATH: /app/data/dashboard-gateway.sqlite
     ports:
       - '7005:7005'
       - '7010:7010'
+    volumes:
+      - ./data/dashboard-gateway:/app/data
 
   dashboard:
     profiles:

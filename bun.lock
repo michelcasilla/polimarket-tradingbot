@@ -84,6 +84,7 @@
       "name": "@polymarket-bot/dashboard",
       "version": "0.1.0",
       "dependencies": {
+        "@ant-design/icons": "^6.2.2",
         "@polymarket-bot/contracts": "workspace:*",
         "antd": "^5.27.6",
         "react": "^18.3.1",

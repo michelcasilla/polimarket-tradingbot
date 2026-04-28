@@ -1,4 +1,7 @@
 import type { ServerWebSocket } from 'bun';
+import { Database } from 'bun:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { z } from 'zod';
 import { CommonEnvSchema, loadEnv } from '@polymarket-bot/config';
 import {
@@ -15,6 +18,7 @@ import { startHealthServer } from '@polymarket-bot/health';
 const EnvSchema = CommonEnvSchema.extend({
   HEALTH_PORT_DASHBOARD_GATEWAY: z.coerce.number().int().positive().default(7005),
   DASHBOARD_WS_PORT: z.coerce.number().int().positive().default(7010),
+  DASHBOARD_GATEWAY_DB_PATH: z.string().default('./data/dashboard-gateway.sqlite'),
 });
 
 const env = loadEnv(EnvSchema);
@@ -36,6 +40,238 @@ const clients = new Set<ServerWebSocket<unknown>>();
 let heartbeatTimer: Timer | undefined;
 const activeSubscriptions: Unsubscribe[] = [];
 let busConnected = false;
+const dbDir = dirname(env.DASHBOARD_GATEWAY_DB_PATH);
+mkdirSync(dbDir, { recursive: true });
+const db = new Database(env.DASHBOARD_GATEWAY_DB_PATH);
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS execution_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id TEXT NOT NULL,
+  market_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  filled_size REAL NOT NULL DEFAULT 0,
+  average_price REAL,
+  fees REAL,
+  signal_reason TEXT,
+  side TEXT,
+  outcome TEXT,
+  timestamp_ms INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_execution_events_order_ts ON execution_events(order_id, timestamp_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_events_reason ON execution_events(signal_reason);
+
+CREATE TABLE IF NOT EXISTS position_snapshots (
+  market_id TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  net_size REAL NOT NULL DEFAULT 0,
+  average_entry_price REAL NOT NULL DEFAULT 0,
+  realized_pnl_usdc REAL NOT NULL DEFAULT 0,
+  unrealized_pnl_usdc REAL NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL,
+  source TEXT,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (market_id, outcome)
+);
+`);
+
+const insertExecutionStmt = db.prepare(`
+INSERT INTO execution_events (
+  order_id, market_id, status, filled_size, average_price, fees,
+  signal_reason, side, outcome, timestamp_ms, payload_json
+) VALUES (
+  $order_id, $market_id, $status, $filled_size, $average_price, $fees,
+  $signal_reason, $side, $outcome, $timestamp_ms, $payload_json
+)
+`);
+
+const upsertPositionStmt = db.prepare(`
+INSERT INTO position_snapshots (
+  market_id, outcome, net_size, average_entry_price, realized_pnl_usdc,
+  unrealized_pnl_usdc, updated_at_ms, source, payload_json
+) VALUES (
+  $market_id, $outcome, $net_size, $average_entry_price, $realized_pnl_usdc,
+  $unrealized_pnl_usdc, $updated_at_ms, $source, $payload_json
+)
+ON CONFLICT(market_id, outcome) DO UPDATE SET
+  net_size = excluded.net_size,
+  average_entry_price = excluded.average_entry_price,
+  realized_pnl_usdc = excluded.realized_pnl_usdc,
+  unrealized_pnl_usdc = excluded.unrealized_pnl_usdc,
+  updated_at_ms = excluded.updated_at_ms,
+  source = excluded.source,
+  payload_json = excluded.payload_json
+`);
+
+const latestOrderStatusesStmt = db.prepare(`
+SELECT e.order_id, e.status
+FROM execution_events e
+JOIN (
+  SELECT order_id, MAX(timestamp_ms) AS max_ts
+  FROM execution_events
+  GROUP BY order_id
+) latest
+  ON latest.order_id = e.order_id AND latest.max_ts = e.timestamp_ms
+`);
+
+const reasonAttributionStmt = db.prepare(`
+SELECT
+  COALESCE(signal_reason, 'unknown') AS reason,
+  COUNT(*) AS fills,
+  SUM(COALESCE(fees, 0)) AS fees_total,
+  SUM(COALESCE(filled_size, 0) * COALESCE(average_price, 0)) AS notional_total
+FROM execution_events
+WHERE status = 'FILLED'
+GROUP BY COALESCE(signal_reason, 'unknown')
+ORDER BY fills DESC
+`);
+
+const positionTotalsStmt = db.prepare(`
+SELECT
+  SUM(realized_pnl_usdc) AS realized_total,
+  SUM(unrealized_pnl_usdc) AS unrealized_total
+FROM position_snapshots
+`);
+
+const fillLedgerStmt = db.prepare(`
+SELECT
+  id,
+  order_id,
+  market_id,
+  status,
+  COALESCE(signal_reason, 'unknown') AS reason,
+  COALESCE(fees, 0) AS fees,
+  timestamp_ms,
+  side,
+  outcome
+FROM execution_events
+WHERE status = 'FILLED'
+ORDER BY timestamp_ms ASC, id ASC
+`);
+
+const persistEvent = (channel: string, payload: unknown): void => {
+  const data = (payload ?? {}) as Record<string, unknown>;
+  if (channel === Channels.executorResults) {
+    if (typeof data.orderId !== 'string' || typeof data.marketId !== 'string' || typeof data.status !== 'string') {
+      return;
+    }
+    insertExecutionStmt.run({
+      $order_id: data.orderId,
+      $market_id: data.marketId,
+      $status: data.status,
+      $filled_size: typeof data.filledSize === 'number' ? data.filledSize : 0,
+      $average_price: typeof data.averagePrice === 'number' ? data.averagePrice : null,
+      $fees: typeof data.fees === 'number' ? data.fees : null,
+      $signal_reason: typeof data.signalReason === 'string' ? data.signalReason : null,
+      $side: typeof data.side === 'string' ? data.side : null,
+      $outcome: typeof data.outcome === 'string' ? data.outcome : null,
+      $timestamp_ms: typeof data.timestamp === 'number' ? data.timestamp : Date.now(),
+      $payload_json: JSON.stringify(data),
+    });
+    return;
+  }
+  if (channel === Channels.executorPositions) {
+    if (typeof data.marketId !== 'string' || typeof data.outcome !== 'string') {
+      return;
+    }
+    upsertPositionStmt.run({
+      $market_id: data.marketId,
+      $outcome: data.outcome,
+      $net_size: typeof data.netSize === 'number' ? data.netSize : 0,
+      $average_entry_price: typeof data.averageEntryPrice === 'number' ? data.averageEntryPrice : 0,
+      $realized_pnl_usdc: typeof data.realizedPnlUsdc === 'number' ? data.realizedPnlUsdc : 0,
+      $unrealized_pnl_usdc: typeof data.unrealizedPnlUsdc === 'number' ? data.unrealizedPnlUsdc : 0,
+      $updated_at_ms: typeof data.updatedAt === 'number' ? data.updatedAt : Date.now(),
+      $source: typeof data.source === 'string' ? data.source : null,
+      $payload_json: JSON.stringify(data),
+    });
+  }
+};
+
+const readPnlSummary = () => {
+  const latestStatuses = latestOrderStatusesStmt.all() as Array<{ order_id: string; status: string }>;
+  let open = 0;
+  let closed = 0;
+  const lifecycle = { filled: 0, cancelled: 0, rejected: 0, expired: 0 };
+  for (const row of latestStatuses) {
+    if (row.status === 'PENDING' || row.status === 'PLACED' || row.status === 'PARTIALLY_FILLED') open += 1;
+    else closed += 1;
+    if (row.status === 'FILLED') lifecycle.filled += 1;
+    if (row.status === 'CANCELLED') lifecycle.cancelled += 1;
+    if (row.status === 'REJECTED') lifecycle.rejected += 1;
+    if (row.status === 'EXPIRED') lifecycle.expired += 1;
+    void row.order_id;
+  }
+
+  const attribution = (reasonAttributionStmt.all() as Array<{
+    reason: string;
+    fills: number;
+    fees_total: number | null;
+    notional_total: number | null;
+  }>).map((row) => ({
+    reason: row.reason,
+    fills: row.fills,
+    feesTotal: row.fees_total ?? 0,
+    notionalTotal: row.notional_total ?? 0,
+    // Conservative proxy until we have full close-trade accounting.
+    realizedPnlProxy: -(row.fees_total ?? 0),
+  }));
+
+  const posTotals = (positionTotalsStmt.get() as { realized_total: number | null; unrealized_total: number | null } | null) ?? {
+    realized_total: 0,
+    unrealized_total: 0,
+  };
+
+  return {
+    updatedAt: Date.now(),
+    orders: {
+      total: latestStatuses.length,
+      open,
+      closed,
+      lifecycle,
+    },
+    pnl: {
+      realizedTotal: posTotals.realized_total ?? 0,
+      unrealizedTotal: posTotals.unrealized_total ?? 0,
+      netTotal: (posTotals.realized_total ?? 0) + (posTotals.unrealized_total ?? 0),
+    },
+    attribution,
+  };
+};
+
+const readPnlLedger = (limit: number) => {
+  const rows = fillLedgerStmt.all() as Array<{
+    id: number;
+    order_id: string;
+    market_id: string;
+    status: string;
+    reason: string;
+    fees: number;
+    timestamp_ms: number;
+    side: string | null;
+    outcome: string | null;
+  }>;
+  let cumulative = 0;
+  const withCumulative = rows.map((row) => {
+    const pnlDelta = -Math.abs(row.fees ?? 0);
+    cumulative += pnlDelta;
+    return {
+      id: row.id,
+      orderId: row.order_id,
+      marketId: row.market_id,
+      status: row.status,
+      reason: row.reason,
+      fees: row.fees ?? 0,
+      pnlDelta,
+      cumulative,
+      timestamp: row.timestamp_ms,
+      side: row.side,
+      outcome: row.outcome,
+    };
+  });
+  return withCumulative.slice(Math.max(0, withCumulative.length - limit)).reverse();
+};
 
 const broadcast = (event: LiveEvent): void => {
   const text = JSON.stringify(event);
@@ -121,6 +357,24 @@ const startWsServer = (bus: MessageBus) =>
           healthPort: env.HEALTH_PORT_DASHBOARD_GATEWAY,
         });
       }
+      if (req.method === 'GET' && url.pathname === '/analytics/pnl-summary') {
+        return Response.json(readPnlSummary(), {
+          headers: { ...corsControlHeaders, 'Access-Control-Allow-Methods': 'GET, OPTIONS' },
+        });
+      }
+      if (req.method === 'GET' && url.pathname === '/analytics/pnl-ledger') {
+        const limitRaw = Number(url.searchParams.get('limit') ?? '200');
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 200;
+        return Response.json(
+          {
+            updatedAt: Date.now(),
+            rows: readPnlLedger(limit),
+          },
+          {
+            headers: { ...corsControlHeaders, 'Access-Control-Allow-Methods': 'GET, OPTIONS' },
+          },
+        );
+      }
       return new Response('dashboard-gateway ws server', { status: 200 });
     },
     websocket: {
@@ -159,6 +413,7 @@ const main = async (): Promise<void> => {
 
   const subscribeStaticChannel = async (channel: StaticChannelName): Promise<void> => {
     const unsubscribe = await bus.subscribe(channel, (payload) => {
+      persistEvent(channel, payload);
       broadcast({
         type: channel === Channels.systemHealth ? 'HEALTH' : 'LOG',
         timestamp: Date.now(),

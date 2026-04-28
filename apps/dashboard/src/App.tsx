@@ -6,6 +6,7 @@ import {
   Popconfirm,
   Space,
   Switch,
+  Statistic,
   Table,
   Tag,
   Tooltip,
@@ -108,6 +109,47 @@ const parseViewFromHash = (): DashboardView => {
   const path = hash.startsWith('#') ? hash.slice(1) : hash;
   return ROUTE_TO_VIEW[path] ?? 'dashboard';
 };
+
+interface PersistedPnlSummary {
+  updatedAt: number;
+  orders: {
+    total: number;
+    open: number;
+    closed: number;
+    lifecycle: {
+      filled: number;
+      cancelled: number;
+      rejected: number;
+      expired: number;
+    };
+  };
+  pnl: {
+    realizedTotal: number;
+    unrealizedTotal: number;
+    netTotal: number;
+  };
+  attribution: Array<{
+    reason: string;
+    fills: number;
+    feesTotal: number;
+    notionalTotal: number;
+    realizedPnlProxy: number;
+  }>;
+}
+
+interface PersistedPnlLedgerRow {
+  id: number;
+  orderId: string;
+  marketId: string;
+  status: string;
+  reason: string;
+  fees: number;
+  pnlDelta: number;
+  cumulative: number;
+  timestamp: number;
+  side: string | null;
+  outcome: string | null;
+}
 
 const eventColumns: ColumnsType<GatewayEvent> = [
   {
@@ -853,6 +895,8 @@ const App = () => {
   const [executionModeFilter, setExecutionModeFilter] = useState<ExecutorRunMode>('simulation');
   const [activeView, setActiveView] = useState<DashboardView>(parseViewFromHash);
   const [collapsed, setCollapsed] = useState(false);
+  const [persistedPnlSummary, setPersistedPnlSummary] = useState<PersistedPnlSummary | null>(null);
+  const [persistedPnlLedger, setPersistedPnlLedger] = useState<PersistedPnlLedgerRow[]>([]);
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
@@ -874,6 +918,54 @@ const App = () => {
       window.history.replaceState(null, '', targetHash);
     }
   }, [activeView]);
+
+  useEffect(() => {
+    const httpBase = wsUrl.replace(/^ws/i, 'http').replace(/\/ws$/, '');
+    const endpoint = `${httpBase}/analytics/pnl-summary`;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(endpoint);
+        if (!res.ok) return;
+        const json = (await res.json()) as PersistedPnlSummary;
+        if (!cancelled) setPersistedPnlSummary(json);
+      } catch {
+        // Keep UI working even when analytics endpoint is unavailable.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [wsUrl]);
+
+  useEffect(() => {
+    const httpBase = wsUrl.replace(/^ws/i, 'http').replace(/\/ws$/, '');
+    const endpoint = `${httpBase}/analytics/pnl-ledger?limit=300`;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(endpoint);
+        if (!res.ok) return;
+        const json = (await res.json()) as { rows?: PersistedPnlLedgerRow[] };
+        if (!cancelled) setPersistedPnlLedger(Array.isArray(json.rows) ? json.rows : []);
+      } catch {
+        // Keep UI running if ledger endpoint is unavailable.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [wsUrl]);
 
   const filteredExecutions = useMemo(
     () =>
@@ -906,13 +998,13 @@ const App = () => {
   );
 
   const rewardScores = useMemo(() => {
-    const rows: Array<{
+    const latestByMarketOutcome = new Map<string, {
       marketId: string;
       outcome: 'YES' | 'NO';
       expectedScore: number;
       size: number;
       computedAt: number;
-    }> = [];
+    }>();
     for (const e of rareEvents) {
       if (e.payload['channel'] !== 'strategist:reward-scores') continue;
       const data = e.payload['data'];
@@ -926,31 +1018,224 @@ const App = () => {
       ) {
         continue;
       }
-      rows.push({
+      const outcome = d['outcome'] === 'YES' ? 'YES' : 'NO';
+      const row: {
+        marketId: string;
+        outcome: 'YES' | 'NO';
+        expectedScore: number;
+        size: number;
+        computedAt: number;
+      } = {
         marketId: d['marketId'],
-        outcome: d['outcome'],
+        outcome,
         expectedScore: d['expectedScore'],
         size: d['size'],
         computedAt: typeof d['computedAt'] === 'number' ? d['computedAt'] : e.timestamp,
-      });
-      if (rows.length >= 30) break;
+      };
+      const key = `${row.marketId}:${row.outcome}`;
+      if (!latestByMarketOutcome.has(key)) {
+        latestByMarketOutcome.set(key, row);
+      }
+      if (latestByMarketOutcome.size >= 30) break;
     }
-    return rows;
+    return Array.from(latestByMarketOutcome.values()).sort((a, b) => b.expectedScore - a.expectedScore);
   }, [rareEvents]);
 
   const pnlAttribution = useMemo(() => {
-    const agg = new Map<string, { pnl: number; count: number }>();
+    const realizedByReason = new Map<string, { realizedPnl: number; trades: number }>();
     for (const exec of executions) {
       const pnl = computeLivePnlUsdc(exec, snapshots);
       if (pnl === null) continue;
       const key = exec.signalReason ?? 'unknown';
-      const cur = agg.get(key) ?? { pnl: 0, count: 0 };
-      cur.pnl += pnl;
-      cur.count += 1;
-      agg.set(key, cur);
+      const cur = realizedByReason.get(key) ?? { realizedPnl: 0, trades: 0 };
+      cur.realizedPnl += pnl;
+      cur.trades += 1;
+      realizedByReason.set(key, cur);
     }
-    return Array.from(agg.entries()).map(([reason, value]) => ({ reason, ...value }));
+
+    const signalBuckets = new Map<string, { count: number; spreads: number[] }>();
+    let minTs = Number.POSITIVE_INFINITY;
+    let maxTs = Number.NEGATIVE_INFINITY;
+    for (const e of rareEvents) {
+      if (e.payload['channel'] !== 'strategist:signals') continue;
+      const data = e.payload['data'];
+      if (!data || typeof data !== 'object') continue;
+      const d = data as Record<string, unknown>;
+      if (typeof d['reason'] !== 'string') continue;
+      const timestamp = typeof d['timestamp'] === 'number' ? d['timestamp'] : e.timestamp;
+      const metadata = (d['metadata'] ?? {}) as Record<string, unknown>;
+      const spread = typeof metadata['spread'] === 'number' ? metadata['spread'] : null;
+      const bucket = signalBuckets.get(d['reason']) ?? { count: 0, spreads: [] };
+      bucket.count += 1;
+      if (spread !== null) bucket.spreads.push(spread);
+      signalBuckets.set(d['reason'], bucket);
+      if (timestamp < minTs) minTs = timestamp;
+      if (timestamp > maxTs) maxTs = timestamp;
+    }
+
+    const durationSec =
+      Number.isFinite(minTs) && Number.isFinite(maxTs) && maxTs > minTs ? (maxTs - minTs) / 1000 : 1;
+    const sizeUsdc = 20;
+    const conservative = { fillRate: 0.18, captureRate: 0.45, feeProb: 0.002, adverseProb: 0.008 };
+    const base = { fillRate: 0.28, captureRate: 0.6, feeProb: 0.002, adverseProb: 0.004 };
+
+    const rows = new Map<
+      string,
+      {
+        reason: string;
+        signals: number;
+        signalsPerHour: number;
+        avgSpread: number | null;
+        realizedPnl: number;
+        trades: number;
+        conservativePnlDay: number | null;
+        basePnlDay: number | null;
+      }
+    >();
+
+    for (const [reason, bucket] of signalBuckets.entries()) {
+      const avgSpread =
+        bucket.spreads.length > 0
+          ? bucket.spreads.reduce((acc, value) => acc + value, 0) / bucket.spreads.length
+          : null;
+      const signalsPerHour = (bucket.count * 3600) / Math.max(durationSec, 1);
+      const realized = realizedByReason.get(reason) ?? { realizedPnl: 0, trades: 0 };
+      const persisted = persistedPnlSummary?.attribution.find((a) => a.reason === reason) ?? null;
+
+      const estimateDay = (params: {
+        fillRate: number;
+        captureRate: number;
+        feeProb: number;
+        adverseProb: number;
+      }): number | null => {
+        if (avgSpread === null) return null;
+        const edgeProb = avgSpread * params.captureRate - params.feeProb - params.adverseProb;
+        const pnlPerSignal = sizeUsdc * params.fillRate * edgeProb;
+        return pnlPerSignal * signalsPerHour * 24;
+      };
+
+      rows.set(reason, {
+        reason,
+        signals: bucket.count,
+        signalsPerHour,
+        avgSpread,
+        realizedPnl: persisted ? persisted.realizedPnlProxy : realized.realizedPnl,
+        trades: persisted ? persisted.fills : realized.trades,
+        conservativePnlDay: estimateDay(conservative),
+        basePnlDay: estimateDay(base),
+      });
+    }
+
+    for (const [reason, realized] of realizedByReason.entries()) {
+      if (rows.has(reason)) continue;
+      rows.set(reason, {
+        reason,
+        signals: 0,
+        signalsPerHour: 0,
+        avgSpread: null,
+        realizedPnl: realized.realizedPnl,
+        trades: realized.trades,
+        conservativePnlDay: null,
+        basePnlDay: null,
+      });
+    }
+
+    return Array.from(rows.values()).sort((a, b) => b.signals - a.signals);
+  }, [executions, rareEvents, snapshots, persistedPnlSummary]);
+
+  const tradingOverview = useMemo(() => {
+    if (persistedPnlSummary) {
+      const wins = persistedPnlSummary.attribution.filter((a) => a.realizedPnlProxy > 0).length;
+      const losses = persistedPnlSummary.attribution.filter((a) => a.realizedPnlProxy < 0).length;
+      const classified = wins + losses;
+      return {
+        total: persistedPnlSummary.orders.total,
+        open: persistedPnlSummary.orders.open,
+        closed: persistedPnlSummary.orders.closed,
+        lifecycle: persistedPnlSummary.orders.lifecycle,
+        pnlTotal: persistedPnlSummary.pnl.netTotal,
+        pnlAvg:
+          persistedPnlSummary.orders.total > 0
+            ? persistedPnlSummary.pnl.netTotal / persistedPnlSummary.orders.total
+            : 0,
+        wins,
+        losses,
+        hitRatio: classified > 0 ? wins / classified : 0,
+      };
+    }
+    const latestByOrder = new Map<string, ExecutionResultView>();
+    for (const e of executions) {
+      const prev = latestByOrder.get(e.orderId);
+      if (!prev || e.timestamp > prev.timestamp) latestByOrder.set(e.orderId, e);
+    }
+    const latestOrders = Array.from(latestByOrder.values());
+    const open = latestOrders.filter((o) => o.status === 'PENDING' || o.status === 'PLACED' || o.status === 'PARTIALLY_FILLED');
+    const closed = latestOrders.length - open.length;
+    const lifecycle = {
+      filled: latestOrders.filter((o) => o.status === 'FILLED').length,
+      cancelled: latestOrders.filter((o) => o.status === 'CANCELLED').length,
+      rejected: latestOrders.filter((o) => o.status === 'REJECTED').length,
+      expired: latestOrders.filter((o) => o.status === 'EXPIRED').length,
+    };
+    const pnls = executions
+      .map((e) => computeLivePnlUsdc(e, snapshots))
+      .filter((v): v is number => v !== null);
+    const pnlTotal = pnls.reduce((acc, v) => acc + v, 0);
+    const pnlAvg = pnls.length > 0 ? pnlTotal / pnls.length : 0;
+    const wins = pnls.filter((v) => v > 0).length;
+    const losses = pnls.filter((v) => v < 0).length;
+    const hitRatio = wins + losses > 0 ? wins / (wins + losses) : 0;
+    return {
+      total: latestOrders.length,
+      open: open.length,
+      closed,
+      lifecycle,
+      pnlTotal,
+      pnlAvg,
+      wins,
+      losses,
+      hitRatio,
+    };
+  }, [executions, snapshots, persistedPnlSummary]);
+
+  const pnlTrajectory = useMemo(() => {
+    const timeline = executions
+      .map((e) => ({ e, pnl: computeLivePnlUsdc(e, snapshots) }))
+      .filter((x): x is { e: ExecutionResultView; pnl: number } => x.pnl !== null)
+      .sort((a, b) => a.e.timestamp - b.e.timestamp);
+    let cumulative = 0;
+    const rows = timeline.map((x) => {
+      cumulative += x.pnl;
+      return {
+        key: `${x.e.orderId}-${x.e.timestamp}`,
+        time: x.e.timestamp,
+        reason: x.e.signalReason ?? 'unknown',
+        pnl: x.pnl,
+        cumulative,
+      };
+    });
+    return rows.slice(-30).reverse();
   }, [executions, snapshots]);
+
+  const equityCurvePath = useMemo(() => {
+    const points = [...pnlTrajectory].reverse();
+    if (points.length < 2) return null;
+    const values = points.map((p) => p.cumulative);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = Math.max(max - min, 1e-9);
+    const width = 100;
+    const height = 28;
+    const coords = values.map((value, idx) => {
+      const x = (idx / Math.max(values.length - 1, 1)) * width;
+      const y = height - ((value - min) / range) * height;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    });
+    return {
+      polyline: coords.join(' '),
+      latest: values[values.length - 1] ?? 0,
+    };
+  }, [pnlTrajectory]);
 
   const historicalTrades = useMemo(
     () =>
@@ -959,6 +1244,61 @@ const App = () => {
         .map((e) => ({ ...e, pnl: computeLivePnlUsdc(e, snapshots) }))
         .sort((a, b) => b.timestamp - a.timestamp),
     [executions, snapshots],
+  );
+
+  const persistedLedgerColumns: ColumnsType<PersistedPnlLedgerRow> = useMemo(
+    () => [
+      {
+        title: 'Time',
+        dataIndex: 'timestamp',
+        key: 'timestamp',
+        width: 110,
+        render: (v: number) => <span className="mono">{new Date(v).toLocaleTimeString()}</span>,
+      },
+      {
+        title: 'Market',
+        key: 'market',
+        render: (_: unknown, record) => (
+          <span className="mono">{truncateId(record.marketId, 28)}</span>
+        ),
+      },
+      {
+        title: 'Side',
+        key: 'side',
+        width: 120,
+        render: (_: unknown, record) => (
+          <Tag color={record.side === 'BUY' ? 'green' : 'volcano'}>
+            {(record.side ?? '—').toUpperCase()} {record.outcome ?? ''}
+          </Tag>
+        ),
+      },
+      { title: 'Reason', dataIndex: 'reason', key: 'reason', width: 180 },
+      {
+        title: 'Fees',
+        dataIndex: 'fees',
+        key: 'fees',
+        align: 'right',
+        width: 120,
+        render: (v: number) => <span className="mono">{formatPnl(-Math.abs(v))}</span>,
+      },
+      {
+        title: 'PnL Δ',
+        dataIndex: 'pnlDelta',
+        key: 'pnlDelta',
+        align: 'right',
+        width: 120,
+        render: (v: number) => <span className="mono">{formatPnl(v)}</span>,
+      },
+      {
+        title: 'Cumulative',
+        dataIndex: 'cumulative',
+        key: 'cumulative',
+        align: 'right',
+        width: 130,
+        render: (v: number) => <span className="mono">{formatPnl(v)}</span>,
+      },
+    ],
+    [],
   );
 
   const tradeHistoryColumns: ColumnsType<(ExecutionResultView & { pnl: number | null })> = useMemo(
@@ -1280,6 +1620,80 @@ const App = () => {
           />
               </DataTableCard>}
 
+              {showExecution && <DataTableCard
+          title="Trading Overview"
+          extra={<Text type="secondary">Open/closed orders, win rate and PnL trajectory</Text>}
+          isEmpty={executions.length === 0}
+          emptyDescription="No execution data yet."
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space size={16} wrap>
+              <Statistic title="Orders total" value={tradingOverview.total} />
+              <Statistic title="Open" value={tradingOverview.open} />
+              <Statistic title="Closed" value={tradingOverview.closed} />
+              <Statistic title="Wins" value={tradingOverview.wins} />
+              <Statistic title="Losses" value={tradingOverview.losses} />
+              <Statistic title="Hit ratio" value={`${(tradingOverview.hitRatio * 100).toFixed(1)}%`} />
+              <Statistic title="PnL total" value={formatPnl(tradingOverview.pnlTotal)} />
+              <Statistic title="PnL avg/trade" value={formatPnl(tradingOverview.pnlAvg)} />
+            </Space>
+            <Text type="secondary">
+              Lifecycle: filled {tradingOverview.lifecycle.filled} · cancelled {tradingOverview.lifecycle.cancelled} · rejected {tradingOverview.lifecycle.rejected} · expired {tradingOverview.lifecycle.expired}
+            </Text>
+            {equityCurvePath ? (
+              <div style={{ width: '100%', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, padding: 8 }}>
+                <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <Text type="secondary">Equity curve (cumulative PnL)</Text>
+                  <Text className="mono" style={{ color: equityCurvePath.latest >= 0 ? '#73d13d' : '#ff7875' }}>
+                    {formatPnl(equityCurvePath.latest)}
+                  </Text>
+                </Space>
+                <svg viewBox="0 0 100 28" preserveAspectRatio="none" style={{ width: '100%', height: 80, marginTop: 6 }}>
+                  <polyline
+                    fill="none"
+                    stroke={equityCurvePath.latest >= 0 ? '#52c41a' : '#ff4d4f'}
+                    strokeWidth="1.8"
+                    points={equityCurvePath.polyline}
+                  />
+                </svg>
+              </div>
+            ) : null}
+            <Table
+              className="compact-table"
+              rowKey={(record) => record.key}
+              dataSource={pnlTrajectory}
+              pagination={false}
+              size="small"
+              columns={[
+                {
+                  title: 'Time',
+                  dataIndex: 'time',
+                  key: 'time',
+                  width: 110,
+                  render: (v: number) => <span className="mono">{new Date(v).toLocaleTimeString()}</span>,
+                },
+                { title: 'Reason', dataIndex: 'reason', key: 'reason', width: 170 },
+                {
+                  title: 'PnL',
+                  dataIndex: 'pnl',
+                  key: 'pnl',
+                  align: 'right',
+                  width: 120,
+                  render: (v: number) => <span className="mono">{formatPnl(v)}</span>,
+                },
+                {
+                  title: 'Cumulative',
+                  dataIndex: 'cumulative',
+                  key: 'cumulative',
+                  align: 'right',
+                  width: 130,
+                  render: (v: number) => <span className="mono">{formatPnl(v)}</span>,
+                },
+              ]}
+            />
+          </Space>
+              </DataTableCard>}
+
               {showRisk && <DataTableCard
           title="Positions (bot-executor)"
           extra={
@@ -1316,7 +1730,11 @@ const App = () => {
                 key: 'expectedScore',
                 align: 'right',
                 width: 140,
-                render: (v: number) => <span className="mono">{v.toFixed(3)}</span>,
+                render: (v: number) => (
+                  <span className="mono">
+                    {v >= 1000 ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : v.toFixed(3)}
+                  </span>
+                ),
               },
               {
                 title: 'Size',
@@ -1341,7 +1759,11 @@ const App = () => {
 
               {showRewards && <DataTableCard
           title="PnL Attribution (by reason)"
-          extra={<Text type="secondary">{pnlAttribution.length} strategy buckets</Text>}
+          extra={
+            <Text type="secondary">
+              {pnlAttribution.length} strategy buckets · realized + model estimate
+            </Text>
+          }
           isEmpty={pnlAttribution.length === 0}
           emptyDescription="No attributed PnL yet."
         >
@@ -1353,14 +1775,49 @@ const App = () => {
             size="small"
             columns={[
               { title: 'Reason', dataIndex: 'reason', key: 'reason' },
-              { title: 'Trades', dataIndex: 'count', key: 'count', align: 'right', width: 100 },
+              { title: 'Signals', dataIndex: 'signals', key: 'signals', align: 'right', width: 90 },
               {
-                title: 'PnL',
-                dataIndex: 'pnl',
-                key: 'pnl',
+                title: 'Signals/h',
+                dataIndex: 'signalsPerHour',
+                key: 'signalsPerHour',
                 align: 'right',
-                width: 140,
+                width: 100,
+                render: (v: number) => <span className="mono">{v.toFixed(0)}</span>,
+              },
+              {
+                title: 'Avg Spread',
+                dataIndex: 'avgSpread',
+                key: 'avgSpread',
+                align: 'right',
+                width: 100,
+                render: (v: number | null) => <span className="mono">{formatSpread(v)}</span>,
+              },
+              { title: 'Trades', dataIndex: 'trades', key: 'trades', align: 'right', width: 80 },
+              {
+                title: 'PnL Realized',
+                dataIndex: 'realizedPnl',
+                key: 'realizedPnl',
+                align: 'right',
+                width: 120,
                 render: (v: number) => <span className="mono">{formatPnl(v)}</span>,
+              },
+              {
+                title: 'PnL/day (Cons.)',
+                dataIndex: 'conservativePnlDay',
+                key: 'conservativePnlDay',
+                align: 'right',
+                width: 130,
+                render: (v: number | null) =>
+                  v === null ? <span className="mono">—</span> : <span className="mono">{formatPnl(v)}</span>,
+              },
+              {
+                title: 'PnL/day (Base)',
+                dataIndex: 'basePnlDay',
+                key: 'basePnlDay',
+                align: 'right',
+                width: 130,
+                render: (v: number | null) =>
+                  v === null ? <span className="mono">—</span> : <span className="mono">{formatPnl(v)}</span>,
               },
             ]}
           />
@@ -1369,27 +1826,50 @@ const App = () => {
             </>
 
           {activeView === 'trades' && (
-            <DataTableCard
-              title="Trades History"
-              extra={
-                <Text type="secondary">
-                  {historicalTrades.length} trades en buffer · {historicalTrades.filter((t) => (t.pnl ?? 0) > 0).length}{' '}
-                  wins · {historicalTrades.filter((t) => (t.pnl ?? 0) < 0).length} losses
-                </Text>
-              }
-              isEmpty={historicalTrades.length === 0}
-              emptyDescription="Aun no hay trades filled en el historial."
-            >
-              <Table
-                className="compact-table"
-                rowKey={(record) => `${record.orderId}-${record.timestamp}`}
-                columns={tradeHistoryColumns}
-                dataSource={historicalTrades}
-                pagination={{ pageSize: 25, showSizeChanger: false }}
-                scroll={{ x: 1100, y: 640 }}
-                size="small"
-              />
-            </DataTableCard>
+            <Space direction="vertical" size={16} style={{ width: '100%' }}>
+              <DataTableCard
+                title="PnL Ledger (persisted)"
+                extra={
+                  <Text type="secondary">
+                    {persistedPnlLedger.length} rows guardadas en DB · sobrevive refresh/restart
+                  </Text>
+                }
+                isEmpty={persistedPnlLedger.length === 0}
+                emptyDescription="Aun no hay fills persistidos en la base de datos."
+              >
+                <Table
+                  className="compact-table"
+                  rowKey={(record) => `${record.id}`}
+                  columns={persistedLedgerColumns}
+                  dataSource={persistedPnlLedger}
+                  pagination={{ pageSize: 25, showSizeChanger: false }}
+                  scroll={{ x: 980, y: 420 }}
+                  size="small"
+                />
+              </DataTableCard>
+
+              <DataTableCard
+                title="Trades History (live buffer)"
+                extra={
+                  <Text type="secondary">
+                    {historicalTrades.length} trades en buffer · {historicalTrades.filter((t) => (t.pnl ?? 0) > 0).length}{' '}
+                    wins · {historicalTrades.filter((t) => (t.pnl ?? 0) < 0).length} losses
+                  </Text>
+                }
+                isEmpty={historicalTrades.length === 0}
+                emptyDescription="Aun no hay trades filled en el historial."
+              >
+                <Table
+                  className="compact-table"
+                  rowKey={(record) => `${record.orderId}-${record.timestamp}`}
+                  columns={tradeHistoryColumns}
+                  dataSource={historicalTrades}
+                  pagination={{ pageSize: 25, showSizeChanger: false }}
+                  scroll={{ x: 1100, y: 420 }}
+                  size="small"
+                />
+              </DataTableCard>
+            </Space>
           )}
 
           {activeView === 'logs' && (

@@ -63,7 +63,20 @@ const EnvSchema = CommonEnvSchema.merge(RiskEnvSchema).extend({
   /** Cap per autoexec order in USDC (further bounded by MAX_CAPITAL_PER_TRADE_USDC). */
   STRATEGIST_AUTOEXEC_MAX_SIZE_USDC: z.coerce.number().positive().default(20),
   /** TTL for autoexec orders. Shorter than the signal TTL so we don't carry stale ideas. */
-  STRATEGIST_AUTOEXEC_TTL_MS: z.coerce.number().int().positive().default(5_000),
+  STRATEGIST_AUTOEXEC_TTL_MS: z.coerce.number().int().positive().default(15_000),
+  /**
+   * For simulation, `cross` uses top-of-book so orders actually fill and we can
+   * observe PnL. `fair` keeps the previous behavior (post near fair price).
+   */
+  STRATEGIST_AUTOEXEC_PRICE_MODE: z.enum(['cross', 'fair']).default('cross'),
+  /**
+   * Keep `false` in simulation so orders can cross and fill. Set `true` when
+   * you explicitly want maker-only behavior.
+   */
+  STRATEGIST_AUTOEXEC_POST_ONLY: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((v) => v === 'true'),
   STRATEGIST_INVENTORY_SKEW_BPS: z.coerce.number().nonnegative().default(50),
   STRATEGIST_MAX_INVENTORY_SHARES: z.coerce.number().positive().default(200),
   STRATEGIST_REWARDS_ENABLED: z
@@ -172,6 +185,15 @@ const main = async (): Promise<void> => {
     const safeFair = clamp(signal.fairPrice, 0.01, 0.99);
     const size = Math.max(1, Math.floor(sizeBudgetUsdc / safeFair));
 
+    const bestBid = snap.bids[0]?.price ?? null;
+    const bestAsk = snap.asks[0]?.price ?? null;
+    const orderPrice =
+      env.STRATEGIST_AUTOEXEC_PRICE_MODE === 'cross'
+        ? side === 'BUY'
+          ? (bestAsk ?? safeFair)
+          : (bestBid ?? safeFair)
+        : safeFair;
+
     const order: ExecutionOrder = {
       id: `auto-${signal.marketId.slice(2, 10)}-${signal.outcome}-${signal.reason}-${signal.timestamp}`,
       signalId: crypto.randomUUID(),
@@ -179,11 +201,11 @@ const main = async (): Promise<void> => {
       assetId: snap.assetId,
       outcome: signal.outcome,
       side,
-      price: safeFair,
+      price: clamp(orderPrice, 0.01, 0.99),
       size,
       type: 'LIMIT',
       timeInForce: 'GTC',
-      postOnly: true,
+      postOnly: env.STRATEGIST_AUTOEXEC_POST_ONLY,
       signalReason: signal.reason,
       ttlMs: env.STRATEGIST_AUTOEXEC_TTL_MS,
       createdAt: signal.timestamp,
@@ -353,6 +375,8 @@ const main = async (): Promise<void> => {
         lastSentAt: lastAutoExecAt,
         maxSizeUsdc: env.STRATEGIST_AUTOEXEC_MAX_SIZE_USDC,
         ttlMs: env.STRATEGIST_AUTOEXEC_TTL_MS,
+        postOnly: env.STRATEGIST_AUTOEXEC_POST_ONLY,
+        priceMode: env.STRATEGIST_AUTOEXEC_PRICE_MODE,
       },
       news: {
         minImpact: newsConfig.minImpact,

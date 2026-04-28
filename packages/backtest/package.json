@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "test": "bun test",
-    "backtest": "bun run src/cli.ts"
+    "backtest": "bun run src/cli.ts",
+    "signal-pnl": "bun run src/signalPnl.ts"
   },
   "dependencies": {
     "@polymarket-bot/contracts": "workspace:*"
