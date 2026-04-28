@@ -828,19 +828,6 @@ const App = () => {
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
-  const viewTitleMap: Record<
-    'dashboard' | 'markets' | 'signals' | 'execution' | 'trades' | 'risk' | 'rewards' | 'logs',
-    string
-  > = {
-    dashboard: 'Dashboard Overview',
-    markets: 'Markets',
-    signals: 'Signals',
-    execution: 'Execution',
-    trades: 'Trades',
-    risk: 'Risk',
-    rewards: 'Rewards',
-    logs: 'Logs',
-  };
   const showMarkets = activeView === 'dashboard' || activeView === 'markets';
   const showSignals = activeView === 'dashboard' || activeView === 'signals';
   const showExecution = activeView === 'dashboard' || activeView === 'execution';
@@ -1059,18 +1046,12 @@ const App = () => {
       </Sider>
       <Layout>
         <Header style={{ padding: 0, background: colorBgContainer }}>
-          <div className="dashboard-header-bar">
-            <Button
-              type="text"
-              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-              onClick={() => setCollapsed(!collapsed)}
-              style={{ fontSize: '16px', width: 64, height: 64 }}
-            />
-            <div className="dashboard-header-view">
-              <span className="dashboard-header-view-dot" />
-              <span>{viewTitleMap[activeView]}</span>
-            </div>
-          </div>
+          <Button
+            type="text"
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            onClick={() => setCollapsed(!collapsed)}
+            style={{ fontSize: '16px', width: 64, height: 64 }}
+          />
         </Header>
         <Content
           style={{
