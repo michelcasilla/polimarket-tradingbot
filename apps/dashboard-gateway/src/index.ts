@@ -1,7 +1,13 @@
 import type { ServerWebSocket } from 'bun';
 import { z } from 'zod';
 import { CommonEnvSchema, loadEnv } from '@polymarket-bot/config';
-import { createBus, type Unsubscribe, bookDeltaPattern, bookSnapshotPattern } from '@polymarket-bot/bus';
+import {
+  createBus,
+  type MessageBus,
+  type Unsubscribe,
+  bookDeltaPattern,
+  bookSnapshotPattern,
+} from '@polymarket-bot/bus';
 import { Channels, type StaticChannelName } from '@polymarket-bot/contracts';
 import { createLogger } from '@polymarket-bot/logger';
 import { startHealthServer } from '@polymarket-bot/health';
@@ -38,11 +44,70 @@ const broadcast = (event: LiveEvent): void => {
   }
 };
 
-const startWsServer = () =>
+const corsControlHeaders: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+const startWsServer = (bus: MessageBus) =>
   Bun.serve({
     port: env.DASHBOARD_WS_PORT,
-    fetch(req, server) {
+    async fetch(req, server) {
       const url = new URL(req.url);
+
+      if (req.method === 'OPTIONS' && url.pathname.startsWith('/control/')) {
+        return new Response(null, { status: 204, headers: corsControlHeaders });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/control/executor/panic') {
+        await bus.publish(Channels.executorControl, {
+          type: 'PAUSE',
+          reason: 'dashboard_panic',
+          requestedAt: Date.now(),
+        });
+        return Response.json({ ok: true }, { headers: corsControlHeaders });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/control/executor/resume') {
+        await bus.publish(Channels.executorControl, {
+          type: 'RESUME',
+          reason: 'dashboard_resume',
+          requestedAt: Date.now(),
+        });
+        return Response.json({ ok: true }, { headers: corsControlHeaders });
+      }
+
+      const cancelMatch = url.pathname.match(/^\/control\/executor\/orders\/([^/]+)\/cancel$/);
+      if (req.method === 'POST' && cancelMatch) {
+        let body: unknown = {};
+        try {
+          body = await req.json();
+        } catch {
+          body = {};
+        }
+        const marketId =
+          typeof body === 'object' &&
+          body !== null &&
+          typeof (body as Record<string, unknown>)['marketId'] === 'string'
+            ? ((body as Record<string, unknown>)['marketId'] as string)
+            : null;
+        if (!marketId) {
+          return Response.json(
+            { ok: false, error: 'marketId required in JSON body' },
+            { status: 400, headers: corsControlHeaders },
+          );
+        }
+        const orderId = decodeURIComponent(cancelMatch[1]!);
+        await bus.publish(Channels.executorCancels, {
+          orderId,
+          marketId,
+          reason: 'DASHBOARD',
+          requestedAt: Date.now(),
+        });
+        return Response.json({ ok: true }, { headers: corsControlHeaders });
+      }
+
       if (url.pathname === '/ws') {
         if (server.upgrade(req)) {
           return undefined;
@@ -113,7 +178,13 @@ const main = async (): Promise<void> => {
     await subscribeStaticChannel(Channels.oracleSignals);
     await subscribeStaticChannel(Channels.strategistSignals);
     await subscribeStaticChannel(Channels.executorResults);
+    await subscribeStaticChannel(Channels.executorPositions);
+    await subscribeStaticChannel(Channels.executorFills);
+    await subscribeStaticChannel(Channels.executorReconciliation);
+    await subscribeStaticChannel(Channels.executorAdverseSelection);
+    await subscribeStaticChannel(Channels.strategistRewardScores);
     await subscribeStaticChannel(Channels.systemCircuitBreaker);
+    await subscribeStaticChannel(Channels.systemExecutorStatus);
 
     const unsubscribeBookSnapshot = await bus.psubscribe(bookSnapshotPattern, (channel, payload) => {
       broadcast({
@@ -150,7 +221,13 @@ const main = async (): Promise<void> => {
           Channels.oracleSignals,
           Channels.strategistSignals,
           Channels.executorResults,
+          Channels.executorPositions,
+          Channels.executorFills,
+          Channels.executorReconciliation,
+          Channels.executorAdverseSelection,
+          Channels.strategistRewardScores,
           Channels.systemCircuitBreaker,
+          Channels.systemExecutorStatus,
           bookSnapshotPattern,
           bookDeltaPattern,
         ],
@@ -179,7 +256,7 @@ const main = async (): Promise<void> => {
   });
   logger.info({ url: health.url }, 'dashboard-gateway.health.ready');
 
-  const wsServer = startWsServer();
+  const wsServer = startWsServer(bus);
   logger.info(
     { wsUrl: `ws://localhost:${env.DASHBOARD_WS_PORT}/ws` },
     'dashboard-gateway.ws.ready',

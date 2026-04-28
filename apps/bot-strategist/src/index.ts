@@ -7,6 +7,8 @@ import {
   type MarketSignal,
   type OracleSignal,
   type OrderBookSnapshot,
+  type Position,
+  type MarketMetadata,
 } from '@polymarket-bot/contracts';
 import { createLogger } from '@polymarket-bot/logger';
 import { startHealthServer } from '@polymarket-bot/health';
@@ -20,6 +22,7 @@ import {
   type MarketBookPair,
   type NewsAnalyzerConfig,
 } from './analyzers';
+import { computeRewardForSnapshot, rewardScoreToSignal } from './rewardsOptimizer';
 
 /**
  * Bot Strategist (The Brain).
@@ -61,6 +64,15 @@ const EnvSchema = CommonEnvSchema.merge(RiskEnvSchema).extend({
   STRATEGIST_AUTOEXEC_MAX_SIZE_USDC: z.coerce.number().positive().default(20),
   /** TTL for autoexec orders. Shorter than the signal TTL so we don't carry stale ideas. */
   STRATEGIST_AUTOEXEC_TTL_MS: z.coerce.number().int().positive().default(5_000),
+  STRATEGIST_INVENTORY_SKEW_BPS: z.coerce.number().nonnegative().default(50),
+  STRATEGIST_MAX_INVENTORY_SHARES: z.coerce.number().positive().default(200),
+  STRATEGIST_REWARDS_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('true')
+    .transform((v) => v === 'true'),
+  STRATEGIST_REWARDS_MIN_EXPECTED_SCORE: z.coerce.number().nonnegative().default(1),
+  STRATEGIST_REWARDS_MIN_SIZE: z.coerce.number().positive().default(50),
+  STRATEGIST_REWARDS_MAX_SPREAD: z.coerce.number().positive().default(0.04),
 });
 
 const env = loadEnv(EnvSchema);
@@ -95,6 +107,8 @@ const main = async (): Promise<void> => {
   });
 
   const books = new Map<string, MarketBookPair>();
+  const positions = new Map<string, Position>();
+  const marketMetadata = new Map<string, MarketMetadata>();
   const lastEmittedByKey = new Map<string, SignalRecord>();
   const lastOracleByTopic = new Map<string, OracleSignal>();
   let snapshotsConsumed = 0;
@@ -160,6 +174,7 @@ const main = async (): Promise<void> => {
 
     const order: ExecutionOrder = {
       id: `auto-${signal.marketId.slice(2, 10)}-${signal.outcome}-${signal.reason}-${signal.timestamp}`,
+      signalId: crypto.randomUUID(),
       marketId: signal.marketId,
       assetId: snap.assetId,
       outcome: signal.outcome,
@@ -240,9 +255,29 @@ const main = async (): Promise<void> => {
       await tryEmit(signal);
     }
 
-    const spreadSignal = detectSpreadCapture(payload, thresholds, now);
+    const position = positions.get(`${payload.marketId}:${payload.outcome}`) ?? null;
+    const spreadSignal = detectSpreadCapture(
+      payload,
+      thresholds,
+      now,
+      position,
+      env.STRATEGIST_INVENTORY_SKEW_BPS,
+      env.STRATEGIST_MAX_INVENTORY_SHARES,
+    );
     if (spreadSignal) {
       await tryEmit(spreadSignal);
+    }
+    if (env.STRATEGIST_REWARDS_ENABLED) {
+      const meta = marketMetadata.get(payload.marketId);
+      const score = computeRewardForSnapshot(payload, meta, {
+        minIncentiveSize: env.STRATEGIST_REWARDS_MIN_SIZE,
+        maxIncentiveSpread: env.STRATEGIST_REWARDS_MAX_SPREAD,
+        minExpectedScore: env.STRATEGIST_REWARDS_MIN_EXPECTED_SCORE,
+      });
+      if (score) {
+        await bus.publish(Channels.strategistRewardScores, score);
+        await tryEmit(rewardScoreToSignal(score, payload, env.STRATEGIST_SIGNAL_TTL_MS));
+      }
     }
 
     void channel;
@@ -288,6 +323,13 @@ const main = async (): Promise<void> => {
     'strategist.oracle.subscribed',
   );
 
+  await bus.subscribe(Channels.executorPositions, (payload) => {
+    positions.set(`${payload.marketId}:${payload.outcome}`, payload);
+  });
+  await bus.subscribe(Channels.marketsMetadata, (payload) => {
+    marketMetadata.set(payload.marketId, payload);
+  });
+
   const health = await startHealthServer({
     botId: 'strategist',
     port: env.HEALTH_PORT_STRATEGIST,
@@ -317,6 +359,17 @@ const main = async (): Promise<void> => {
         ttlMs: newsConfig.ttlMs,
         mappings: newsConfig.mappings,
         topics: Array.from(lastOracleByTopic.keys()),
+      },
+      inventory: {
+        trackedPositions: positions.size,
+        skewBps: env.STRATEGIST_INVENTORY_SKEW_BPS,
+        maxShares: env.STRATEGIST_MAX_INVENTORY_SHARES,
+      },
+      rewards: {
+        enabled: env.STRATEGIST_REWARDS_ENABLED,
+        minExpectedScore: env.STRATEGIST_REWARDS_MIN_EXPECTED_SCORE,
+        minSize: env.STRATEGIST_REWARDS_MIN_SIZE,
+        maxSpread: env.STRATEGIST_REWARDS_MAX_SPREAD,
       },
     }),
   });

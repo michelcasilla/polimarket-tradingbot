@@ -31,14 +31,23 @@
 - Redis (sub):
   - `executor:orders` → `ExecutionOrder`
   - `executor:cancels` → `CancelOrder`
+  - `executor:control` → `ExecutorControlCommand` (`PAUSE` / `RESUME`) desde dashboard-gateway
   - `polymarket:book:snapshot:*` → `OrderBookSnapshot` (solo modo simulation)
 - Env: ver tabla abajo.
+
+## Control / pausa (dashboard)
+
+- **`PAUSE`** (publicado por el gateway como respuesta al botón “Panic”): bandera en memoria `paused`; todas las órdenes nuevas reciben `REJECTED` con `executor_paused`. En **simulation**, además se cancelan todas las órdenes residentes (`PLACED`) y cada resultado lleva `error: executor_paused`.
+- **`RESUME`**: quita la pausa; no re-hidrata órdenes canceladas.
+- El estado se publica en **`system:executor-control`** (`ExecutorStatusEvent`) en cada transición y cada ~5s (heartbeat). El flag **no persiste**: reiniciar el proceso lo pierde (como el circuit breaker).
+- **Limitación**: una orden taker con `PLACED` → `FILLED` diferido (`setTimeout`) puede seguir completándose tras el pánico; solo las órdenes en el mapa `open` del simulador se cancelan.
 
 ## Salidas
 
 - Redis (pub):
   - `executor:results` → `ExecutionResult`
   - `system:circuit-breaker` → `CircuitBreakerEvent` cuando se dispara el daily stop.
+  - `system:executor-control` → estado de pausa / heartbeat (`ExecutorStatusEvent`)
 - HTTP `:7004`:
   - `/healthz` con `mode`, contadores del simulador (received/accepted/filled/rejected/cancelled/expired), libros cacheados, fees y PnL estimado, descriptor del adapter live cuando aplique.
 

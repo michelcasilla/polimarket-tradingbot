@@ -123,6 +123,7 @@ export const createSimulator = (config: SimulatorConfig) => {
       expiresAt: order.createdAt + ttlMs,
     };
     if (order.signalReason) base.signalReason = order.signalReason;
+    if (order.signalId) base.signalId = order.signalId;
     return { ...base, ...extras };
   };
 

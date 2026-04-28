@@ -2,6 +2,7 @@ import type {
   MarketSignal,
   OracleSignal,
   OrderBookSnapshot,
+  Position,
 } from '@polymarket-bot/contracts';
 
 export interface AnalyzerThresholds {
@@ -166,15 +167,23 @@ export const detectSpreadCapture = (
   snap: OrderBookSnapshot,
   thresholds: AnalyzerThresholds,
   now: number,
+  position?: Position | null,
+  inventorySkewBps: number = 0,
+  maxInventoryShares: number = 1,
 ): MarketSignal | null => {
   if (snap.spread === null || snap.midPrice === null) return null;
   if (snap.spread < thresholds.spreadCaptureMin) return null;
 
+  const ratioBase = maxInventoryShares <= 0 ? 0 : (position?.netSize ?? 0) / maxInventoryShares;
+  const inventoryRatio = Math.max(-1, Math.min(1, ratioBase));
+  if (Math.abs(ratioBase) > 1) return null;
+  const skew = (inventorySkewBps / 10_000) * inventoryRatio;
+  const skewedFair = clampProb(snap.midPrice - skew);
   const confidence = clampProb(snap.spread / 0.1);
   return {
     marketId: snap.marketId,
     outcome: snap.outcome,
-    fairPrice: clampProb(snap.midPrice),
+    fairPrice: skewedFair,
     confidence,
     reason: 'SPREAD_CAPTURE',
     ttlMs: thresholds.signalTtlMs,
@@ -182,6 +191,8 @@ export const detectSpreadCapture = (
     metadata: {
       spread: snap.spread,
       midPrice: snap.midPrice,
+      inventorySkewBps,
+      inventoryRatio,
       bidDepth: snap.bids.reduce((sum, lvl) => sum + lvl.size, 0),
       askDepth: snap.asks.reduce((sum, lvl) => sum + lvl.size, 0),
     },

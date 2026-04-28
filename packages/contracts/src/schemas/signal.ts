@@ -5,6 +5,7 @@ export const StrategyReasonSchema = z.enum([
   'SPREAD_CAPTURE',
   'SUM_TO_ONE_ARBITRAGE',
   'NEWS_ARBITRAGE',
+  'MAKER_REWARDS',
   'OPTIMISTIC_BIAS',
   'INVENTORY_REBALANCE',
   'MANUAL',
@@ -29,6 +30,8 @@ export const OracleProviderSchema = z.enum([
   'SPORTRADAR',
   'NEWS_API',
   'TWITTER',
+  'PYTH',
+  'INTERNAL_POLYMARKET',
   'CUSTOM',
 ]);
 export type OracleProvider = z.infer<typeof OracleProviderSchema>;

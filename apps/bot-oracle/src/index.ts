@@ -6,6 +6,8 @@ import { createLogger } from '@polymarket-bot/logger';
 import { startHealthServer } from '@polymarket-bot/health';
 import { startBinanceClient } from './binanceClient';
 import { createPriceDeltaDetector, defaultSymbolToTopic } from './priceDelta';
+import { createPythProvider } from './pythProvider';
+import { createInternalMomentumProvider } from './internalMomentumProvider';
 
 /**
  * Bot Oracle (Phase 1 — Binance only).
@@ -36,6 +38,23 @@ const EnvSchema = CommonEnvSchema.extend({
   ORACLE_BINANCE_MIN_DELTA_PCT: z.coerce.number().nonnegative().default(0.5),
   ORACLE_BINANCE_SATURATION_PCT: z.coerce.number().positive().default(2.5),
   ORACLE_BINANCE_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(5_000),
+  ORACLE_PYTH_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((v) => v === 'true'),
+  ORACLE_PYTH_ENDPOINT: z
+    .string()
+    .url()
+    .default('https://hermes.pyth.network/v2/updates/price/latest'),
+  ORACLE_PYTH_SYMBOLS: z.string().default('BTCUSD,ETHUSD,SOLUSD'),
+  ORACLE_PYTH_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+  ORACLE_PYTH_MIN_DELTA_PCT: z.coerce.number().nonnegative().default(0.2),
+  ORACLE_MOMENTUM_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('true')
+    .transform((v) => v === 'true'),
+  ORACLE_MOMENTUM_WINDOW_MS: z.coerce.number().int().positive().default(10_000),
+  ORACLE_MOMENTUM_MIN_VELOCITY: z.coerce.number().nonnegative().default(0.005),
 });
 
 const env = loadEnv(EnvSchema);
@@ -74,6 +93,26 @@ const main = async (): Promise<void> => {
 
   let binance: ReturnType<typeof startBinanceClient> | null = null;
   let detector: ReturnType<typeof createPriceDeltaDetector> | null = null;
+  const providerStops: Array<() => Promise<void>> = [];
+
+  const publishSignal = async (signal: OracleSignal): Promise<void> => {
+    try {
+      await bus.publish(Channels.oracleSignals, signal);
+      stats.signalsEmitted += 1;
+      stats.lastSignalAt = signal.timestamp;
+      logger.info(
+        {
+          topic: signal.topic,
+          impactScore: signal.impactScore,
+          raw: signal.rawData,
+        },
+        'oracle.signal.emitted',
+      );
+    } catch (err) {
+      stats.publishErrors += 1;
+      logger.warn({ err, topic: signal.topic }, 'oracle.signal.publish.failed');
+    }
+  };
 
   if (env.ORACLE_BINANCE_ENABLED) {
     const symbols = csv(env.ORACLE_BINANCE_SYMBOLS).map((s) => s.toLowerCase());
@@ -87,25 +126,6 @@ const main = async (): Promise<void> => {
         cooldownMs: env.ORACLE_BINANCE_COOLDOWN_MS,
         symbolToTopic: defaultSymbolToTopic,
       });
-
-      const publishSignal = async (signal: OracleSignal): Promise<void> => {
-        try {
-          await bus.publish(Channels.oracleSignals, signal);
-          stats.signalsEmitted += 1;
-          stats.lastSignalAt = signal.timestamp;
-          logger.info(
-            {
-              topic: signal.topic,
-              impactScore: signal.impactScore,
-              raw: signal.rawData,
-            },
-            'oracle.signal.emitted',
-          );
-        } catch (err) {
-          stats.publishErrors += 1;
-          logger.warn({ err, topic: signal.topic }, 'oracle.signal.publish.failed');
-        }
-      };
 
       binance = startBinanceClient({
         baseUrl: env.BINANCE_WS_URL,
@@ -121,10 +141,34 @@ const main = async (): Promise<void> => {
         },
       });
       await binance.start();
+      providerStops.push(() => binance!.stop());
     }
   } else {
     logger.warn('bot-oracle.binance.disabled');
   }
+
+  const pyth = createPythProvider({
+    enabled: env.ORACLE_PYTH_ENABLED,
+    endpoint: env.ORACLE_PYTH_ENDPOINT,
+    symbols: csv(env.ORACLE_PYTH_SYMBOLS),
+    pollIntervalMs: env.ORACLE_PYTH_POLL_INTERVAL_MS,
+    minDeltaPct: env.ORACLE_PYTH_MIN_DELTA_PCT,
+    logger,
+    publishSignal,
+  });
+  await pyth.start();
+  providerStops.push(() => pyth.stop());
+
+  const momentum = createInternalMomentumProvider({
+    enabled: env.ORACLE_MOMENTUM_ENABLED,
+    bus,
+    logger,
+    windowMs: env.ORACLE_MOMENTUM_WINDOW_MS,
+    minVelocity: env.ORACLE_MOMENTUM_MIN_VELOCITY,
+    publishSignal,
+  });
+  await momentum.start();
+  providerStops.push(() => momentum.stop());
 
   const health = await startHealthServer({
     botId: 'oracle',
@@ -137,6 +181,8 @@ const main = async (): Promise<void> => {
           stats: binance ? binance.getStats() : null,
           symbols: detector ? detector.getState() : null,
         },
+        pyth: pyth.getStats(),
+        momentum: momentum.getStats(),
       },
       ...stats,
       thresholds: {
@@ -153,7 +199,7 @@ const main = async (): Promise<void> => {
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'bot-oracle.shutdown');
     try {
-      if (binance) await binance.stop();
+      for (const stop of providerStops) await stop();
       await bus.shutdown();
       await health.stop();
     } catch (err) {

@@ -102,6 +102,8 @@ export const ExecutionResultSchema = z.object({
   expiresAt: z.number().int().nonnegative().optional(),
   /** Free-form reason tag (e.g. SPREAD_CAPTURE) so the UI can label results. */
   signalReason: z.string().optional(),
+  /** Stable signal identifier for PnL attribution across the pipeline. */
+  signalId: z.string().optional(),
   /** Set by bot-executor when publishing so dashboards can filter simulation vs live. */
   executorMode: z.enum(['simulation', 'live']).optional(),
 });

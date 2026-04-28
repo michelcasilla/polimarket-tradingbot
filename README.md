@@ -72,6 +72,18 @@ bun run dev:dashboard
 
 Abre **http://localhost:5173** (HMR). Equivale a `bun run --cwd apps/dashboard dev`.
 
+## Go-Live runbook (executor)
+
+1. Set `EXECUTOR_MODE=live` and keep `EXECUTOR_LIVE_DRY_RUN=true`.
+2. Run at least 24h in dry-run and verify:
+   - `executor:reconciliation` has no sustained drift
+   - `executor:positions` updates are coherent with fills
+3. Switch to real posting with very low limits:
+   - `EXECUTOR_LIVE_DRY_RUN=false`
+   - `MAX_CAPITAL_PER_TRADE_USDC=5`
+   - `DAILY_STOP_LOSS_USDC=10`
+4. Observe 48h before scaling risk limits upward.
+
 ## Deploy a AWS Dublín
 
 Skeleton en `infra/aws-dublin/`. Ver [`infra/aws-dublin/README.md`](infra/aws-dublin/README.md).

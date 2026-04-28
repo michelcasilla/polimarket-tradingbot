@@ -1,4 +1,4 @@
-import { Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
+import { Button, message, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
 import {
@@ -7,15 +7,19 @@ import {
   DashboardHeader,
   GatewayEventStreamCard,
   getChannelFromEvent,
+  InventoryHeatmap,
   MarketLineWithFicha,
   MetricsStrip,
+  PositionsTable,
 } from './atomic';
 import { formatPnl } from './formatting';
 import {
   useDashboardAggregates,
   useDashboardFilters,
+  useExecutorStatus,
   useGatewayEventFilters,
   useNowTick,
+  usePositions,
 } from './hooks';
 import type { GatewayEvent } from './types';
 
@@ -45,6 +49,7 @@ import {
   ORACLE_TABLE_LEGEND,
   SIGNAL_TABLE_LEGEND,
 } from './tableColumnLegends';
+import { cancelOrder, panicExecutor, resumeExecutor } from './executorControl';
 
 const { Text } = Typography;
 
@@ -600,6 +605,43 @@ const buildExecutionColumns = (
       return <span className="mono">{ageText}</span>;
     },
   },
+  {
+    title: 'Actions',
+    key: 'actions',
+    width: 100,
+    align: 'center',
+    render: (_: unknown, record) => {
+      const cancelable = record.status === 'PLACED' || record.status === 'PARTIALLY_FILLED';
+      if (!cancelable) {
+        return <span className="mono" style={{ color: 'rgba(255,255,255,0.25)' }}>—</span>;
+      }
+      return (
+        <Popconfirm
+          title={`Cancel order ${truncateId(record.orderId, 8, 6)}?`}
+          okText="Cancel order"
+          cancelText="Back"
+          okButtonProps={{ danger: true }}
+          onConfirm={() => {
+            void cancelOrder(record.orderId, record.marketId)
+              .then(async (res) => {
+                if (!res.ok) {
+                  message.error(await res.text());
+                  return;
+                }
+                message.success('Cancel request sent');
+              })
+              .catch(() => {
+                message.error('Failed to reach dashboard-gateway');
+              });
+          }}
+        >
+          <Button size="small" danger type="link">
+            Cancel
+          </Button>
+        </Popconfirm>
+      );
+    },
+  },
 ];
 
 const formatVolume = (value: number | null): string => {
@@ -736,6 +778,10 @@ const App = () => {
     totalReceived,
   });
 
+  const executorStatus = useExecutorStatus(rareEvents);
+  const executorPaused = executorStatus?.paused ?? false;
+  const positions = usePositions(rareEvents);
+
   const signalColumns = useMemo(
     () => buildSignalColumns(snapshots, metadataMap, now),
     [snapshots, metadataMap, now],
@@ -779,6 +825,53 @@ const App = () => {
     channelFilter,
     search,
   );
+
+  const rewardScores = useMemo(() => {
+    const rows: Array<{
+      marketId: string;
+      outcome: 'YES' | 'NO';
+      expectedScore: number;
+      size: number;
+      computedAt: number;
+    }> = [];
+    for (const e of rareEvents) {
+      if (e.payload['channel'] !== 'strategist:reward-scores') continue;
+      const data = e.payload['data'];
+      if (!data || typeof data !== 'object') continue;
+      const d = data as Record<string, unknown>;
+      if (
+        typeof d['marketId'] !== 'string' ||
+        (d['outcome'] !== 'YES' && d['outcome'] !== 'NO') ||
+        typeof d['expectedScore'] !== 'number' ||
+        typeof d['size'] !== 'number'
+      ) {
+        continue;
+      }
+      rows.push({
+        marketId: d['marketId'],
+        outcome: d['outcome'],
+        expectedScore: d['expectedScore'],
+        size: d['size'],
+        computedAt: typeof d['computedAt'] === 'number' ? d['computedAt'] : e.timestamp,
+      });
+      if (rows.length >= 30) break;
+    }
+    return rows;
+  }, [rareEvents]);
+
+  const pnlAttribution = useMemo(() => {
+    const agg = new Map<string, { pnl: number; count: number }>();
+    for (const exec of executions) {
+      const pnl = computeLivePnlUsdc(exec, snapshots);
+      if (pnl === null) continue;
+      const key = exec.signalReason ?? 'unknown';
+      const cur = agg.get(key) ?? { pnl: 0, count: 0 };
+      cur.pnl += pnl;
+      cur.count += 1;
+      agg.set(key, cur);
+    }
+    return Array.from(agg.entries()).map(([reason, value]) => ({ reason, ...value }));
+  }, [executions, snapshots]);
 
   return (
     <div className="dashboard-shell">
@@ -880,7 +973,58 @@ const App = () => {
           title="Execution Results (bot-executor)"
           columnLegend={<ColumnLegendPopover label="Execution columns" rows={EXECUTION_TABLE_LEGEND} />}
           extra={
-            <Space size={8} align="center" wrap={false}>
+            <Space size={8} align="center" wrap>
+              {executorPaused && (
+                <Tooltip title="Executor rejects new orders until resumed. Simulation: resting orders were cancelled on panic.">
+                  <Tag color="red">PAUSED</Tag>
+                </Tooltip>
+              )}
+              {executorPaused ? (
+                <Popconfirm
+                  title="Resume accepting new orders?"
+                  okText="Resume"
+                  onConfirm={() => {
+                    void resumeExecutor()
+                      .then(async (res) => {
+                        if (!res.ok) {
+                          message.error(await res.text());
+                          return;
+                        }
+                        message.success('Resume sent');
+                      })
+                      .catch(() => {
+                        message.error('Failed to reach dashboard-gateway');
+                      });
+                  }}
+                >
+                  <Button size="small" type="primary">
+                    Resume
+                  </Button>
+                </Popconfirm>
+              ) : (
+                <Popconfirm
+                  title="Pause executor and cancel all open resting orders (simulation)?"
+                  okText="Panic"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => {
+                    void panicExecutor()
+                      .then(async (res) => {
+                        if (!res.ok) {
+                          message.error(await res.text());
+                          return;
+                        }
+                        message.success('Panic sent');
+                      })
+                      .catch(() => {
+                        message.error('Failed to reach dashboard-gateway');
+                      });
+                  }}
+                >
+                  <Button size="small" danger>
+                    Panic
+                  </Button>
+                </Popconfirm>
+              )}
               <Tooltip title="Filter by mode the executor stamped on each result. Older events without a tag count as Simulation.">
                 <Switch
                   checked={executionModeFilter === 'live'}
@@ -913,9 +1057,95 @@ const App = () => {
             columns={executionColumns}
             dataSource={filteredExecutions}
             pagination={false}
-            scroll={{ x: 1100, y: 320 }}
+            scroll={{ x: 1250, y: 320 }}
             size="small"
             virtual
+          />
+        </DataTableCard>
+
+        <DataTableCard
+          title="Positions (bot-executor)"
+          extra={
+            <Text type="secondary">
+              {positions.length === 0
+                ? 'Waiting for first position update…'
+                : `${positions.length} open market/outcome positions`}
+            </Text>
+          }
+          isEmpty={positions.length === 0}
+          emptyDescription="No position updates yet. Executor publishes `executor:positions` after fills."
+        >
+          <PositionsTable positions={positions} />
+        </DataTableCard>
+
+        <DataTableCard
+          title="Maker Rewards (estimated)"
+          extra={<Text type="secondary">{rewardScores.length} recent score points</Text>}
+          isEmpty={rewardScores.length === 0}
+          emptyDescription="No reward score events yet (`strategist:reward-scores`)."
+        >
+          <Table
+            className="compact-table"
+            rowKey={(record) => `${record.marketId}:${record.outcome}:${record.computedAt}`}
+            dataSource={rewardScores}
+            pagination={false}
+            size="small"
+            columns={[
+              { title: 'Market', dataIndex: 'marketId', key: 'marketId' },
+              { title: 'Outcome', dataIndex: 'outcome', key: 'outcome', width: 90 },
+              {
+                title: 'Expected Score',
+                dataIndex: 'expectedScore',
+                key: 'expectedScore',
+                align: 'right',
+                width: 140,
+                render: (v: number) => <span className="mono">{v.toFixed(3)}</span>,
+              },
+              {
+                title: 'Size',
+                dataIndex: 'size',
+                key: 'size',
+                align: 'right',
+                width: 120,
+                render: (v: number) => <span className="mono">{v.toFixed(2)}</span>,
+              },
+            ]}
+          />
+        </DataTableCard>
+
+        <DataTableCard
+          title="Inventory Heatmap"
+          extra={<Text type="secondary">Exposure by market/outcome</Text>}
+          isEmpty={positions.length === 0}
+          emptyDescription="No inventory to render."
+        >
+          <InventoryHeatmap positions={positions} />
+        </DataTableCard>
+
+        <DataTableCard
+          title="PnL Attribution (by reason)"
+          extra={<Text type="secondary">{pnlAttribution.length} strategy buckets</Text>}
+          isEmpty={pnlAttribution.length === 0}
+          emptyDescription="No attributed PnL yet."
+        >
+          <Table
+            className="compact-table"
+            rowKey={(record) => record.reason}
+            dataSource={pnlAttribution}
+            pagination={false}
+            size="small"
+            columns={[
+              { title: 'Reason', dataIndex: 'reason', key: 'reason' },
+              { title: 'Trades', dataIndex: 'count', key: 'count', align: 'right', width: 100 },
+              {
+                title: 'PnL',
+                dataIndex: 'pnl',
+                key: 'pnl',
+                align: 'right',
+                width: 140,
+                render: (v: number) => <span className="mono">{formatPnl(v)}</span>,
+              },
+            ]}
           />
         </DataTableCard>
 

@@ -15,12 +15,16 @@ import {
   type ExecutionResult,
   type ExecutorControlCommand,
   type ExecutorStatusEvent,
+  type Fill,
   type OrderBookSnapshot,
 } from '@polymarket-bot/contracts';
 import { createLogger } from '@polymarket-bot/logger';
 import { startHealthServer } from '@polymarket-bot/health';
 import { createSimulator, type Simulator } from './simulator';
 import { createLiveAdapter, type LiveAdapter } from './liveAdapter';
+import { createReconciler } from './reconciler';
+import { createPositionBook } from './positionBook';
+import { createAdverseSelectionDetector } from './adverseSelection';
 
 /**
  * Bot Executor (Transaction Manager).
@@ -57,6 +61,15 @@ const EnvSchema = CommonEnvSchema.merge(PolymarketEnvSchema)
     EXECUTOR_LATENCY_MIN_MS: z.coerce.number().int().nonnegative().default(50),
     EXECUTOR_LATENCY_JITTER_MS: z.coerce.number().int().nonnegative().default(250),
     EXECUTOR_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+    EXECUTOR_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+    EXECUTOR_ADVERSE_HORIZON_MS: z.coerce.number().int().positive().default(30_000),
+    EXECUTOR_ADVERSE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.65),
+    EXECUTOR_ADVERSE_MIN_SAMPLES: z.coerce.number().int().positive().default(20),
+    EXECUTOR_LIVE_DRY_RUN: z
+      .union([z.literal('true'), z.literal('false')])
+      .default('true')
+      .transform((v) => v === 'true'),
+    POLYMARKET_SIGNATURE_TYPE: z.enum(['0', '1', '2']).default('2'),
   });
 
 const env = loadEnv(EnvSchema);
@@ -84,12 +97,18 @@ const buildLiveAdapter = (): LiveAdapter => {
       'EXECUTOR_MODE=live requires POLYGON_PRIVATE_KEY (>=64 chars). Refusing to start.',
     );
   }
+  if (!env.POLYGON_PROXY_WALLET) {
+    throw new Error('EXECUTOR_MODE=live requires POLYGON_PROXY_WALLET.');
+  }
   return createLiveAdapter({
     privateKey: env.POLYGON_PRIVATE_KEY,
     proxyWallet: env.POLYGON_PROXY_WALLET,
     rpcUrl: env.POLYGON_RPC_URL,
     chainId: env.POLYMARKET_CHAIN_ID,
     clobHttpUrl: env.POLYMARKET_CLOB_HTTP_URL,
+    redisUrl: env.REDIS_URL,
+    dryRun: env.EXECUTOR_LIVE_DRY_RUN,
+    signatureType: Number(env.POLYMARKET_SIGNATURE_TYPE) as 0 | 1 | 2,
   });
 };
 
@@ -113,11 +132,43 @@ const main = async (): Promise<void> => {
 
   const simulator = buildSimulator();
   const liveAdapter = mode === 'live' ? buildLiveAdapter() : null;
+  if (liveAdapter) await liveAdapter.init();
+  const positionBook = createPositionBook({ redisUrl: env.REDIS_URL });
 
   let circuitBroadcasted = false;
   let resultsPublished = 0;
   let publishErrors = 0;
   let lastResultAt: number | null = null;
+
+  /** In-memory pause: reject new orders and optionally cancel resting book (simulation). */
+  let paused = false;
+  let pausedSince = 0;
+  let resumeSince = Date.now();
+  const localLiveOpenOrderIds = new Set<string>();
+  const latestMids = new Map<string, number>();
+  const adverseSelection = createAdverseSelectionDetector({
+    bus,
+    logger,
+    horizonMs: env.EXECUTOR_ADVERSE_HORIZON_MS,
+    threshold: env.EXECUTOR_ADVERSE_THRESHOLD,
+    minSamples: env.EXECUTOR_ADVERSE_MIN_SAMPLES,
+    getMidPrice: (marketId, outcome) => latestMids.get(`${marketId}:${outcome}`) ?? null,
+  });
+
+  const publishStatus = async (lastReason: string | null): Promise<void> => {
+    const event: ExecutorStatusEvent = {
+      paused,
+      since: paused ? pausedSince : resumeSince,
+      openOrderCount: mode === 'simulation' ? simulator.getOpenOrderIds().length : 0,
+      mode,
+      lastReason,
+    };
+    try {
+      await bus.publish(Channels.systemExecutorStatus, event);
+    } catch (err) {
+      logger.error({ err }, 'executor.status.publish.failed');
+    }
+  };
 
   const publishResult = async (result: ExecutionResult): Promise<void> => {
     try {
@@ -137,6 +188,25 @@ const main = async (): Promise<void> => {
         },
         'executor.result',
       );
+      if (result.status === 'FILLED' && result.averagePrice !== undefined && result.outcome && result.side) {
+        const fill: Fill = {
+          id: `${result.orderId}:${result.timestamp}`,
+          orderId: result.orderId,
+          signalId: result.signalId,
+          marketId: result.marketId,
+          outcome: result.outcome,
+          side: result.side,
+          size: result.filledSize,
+          price: result.averagePrice,
+          feesUsdc: result.fees ?? 0,
+          isMaker: result.error !== 'post_only_would_cross',
+          timestamp: result.timestamp,
+        };
+        await bus.publish(Channels.executorFills, fill);
+        const position = await positionBook.applyFill(fill);
+        await bus.publish(Channels.executorPositions, position);
+        adverseSelection.ingestFill(fill, result.averagePrice);
+      }
     } catch (err) {
       publishErrors += 1;
       logger.error({ err, orderId: result.orderId }, 'executor.result.publish.failed');
@@ -161,10 +231,56 @@ const main = async (): Promise<void> => {
     }
   };
 
+  const rejectPausedOrder = async (order: ExecutionOrder): Promise<void> => {
+    const result: ExecutionResult = {
+      orderId: order.id,
+      marketId: order.marketId,
+      status: 'REJECTED',
+      filledSize: 0,
+      error: 'executor_paused',
+      timestamp: Date.now(),
+      outcome: order.outcome,
+      side: order.side,
+      requestedPrice: order.price,
+      requestedSize: order.size,
+    };
+    if (order.signalReason !== undefined) result.signalReason = order.signalReason;
+    if (order.ttlMs !== undefined) result.expiresAt = order.createdAt + order.ttlMs;
+    await publishResult(result);
+  };
+
+  const handleControl = async (cmd: ExecutorControlCommand): Promise<void> => {
+    if (cmd.type === 'PAUSE') {
+      paused = true;
+      pausedSince = Date.now();
+      if (mode === 'simulation') {
+        const ids = [...simulator.getOpenOrderIds()];
+        for (const orderId of ids) {
+          const result = simulator.cancel(orderId);
+          if (result) {
+            await publishResult({ ...result, error: 'executor_paused' });
+          }
+        }
+      }
+      await publishStatus(cmd.reason ?? 'dashboard_panic');
+      return;
+    }
+    if (cmd.type === 'RESUME') {
+      paused = false;
+      resumeSince = Date.now();
+      await publishStatus(cmd.reason ?? 'dashboard_resume');
+    }
+  };
+
   const handleOrder = async (order: ExecutionOrder): Promise<void> => {
+    if (paused) {
+      await rejectPausedOrder(order);
+      return;
+    }
     if (mode === 'live' && liveAdapter) {
-      const result = liveAdapter.submit(order);
+      const result = await liveAdapter.submit(order);
       await publishResult(result);
+      if (result.status === 'PLACED') localLiveOpenOrderIds.add(result.orderId);
       return;
     }
     const { immediate, deferred } = simulator.submit(order);
@@ -182,7 +298,9 @@ const main = async (): Promise<void> => {
 
   const handleCancel = async (cancel: CancelOrder): Promise<void> => {
     if (mode === 'live' && liveAdapter) {
-      await publishResult(liveAdapter.cancel(cancel));
+      const result = await liveAdapter.cancel(cancel);
+      await publishResult(result);
+      if (result.status === 'CANCELLED') localLiveOpenOrderIds.delete(cancel.orderId);
       return;
     }
     const result = simulator.cancel(cancel.orderId);
@@ -195,6 +313,9 @@ const main = async (): Promise<void> => {
 
   const handleSnapshot = async (snapshot: OrderBookSnapshot): Promise<void> => {
     simulator.upsertBook(snapshot);
+    if (snapshot.midPrice !== null) latestMids.set(`${snapshot.marketId}:${snapshot.outcome}`, snapshot.midPrice);
+    const marked = positionBook.applyMark(snapshot.marketId, snapshot.outcome, snapshot.midPrice ?? 0.5);
+    if (marked) await bus.publish(Channels.executorPositions, marked);
     const filled = simulator.sweep();
     if (filled.length === 0) return;
     for (const result of filled) {
@@ -213,6 +334,11 @@ const main = async (): Promise<void> => {
       logger.error({ err }, 'executor.cancel.handler.failed'),
     );
   });
+  await bus.subscribe(Channels.executorControl, (payload) => {
+    handleControl(payload).catch((err: unknown) =>
+      logger.error({ err }, 'executor.control.handler.failed'),
+    );
+  });
 
   if (mode === 'simulation') {
     await bus.psubscribe(bookSnapshotPattern, (_channel, payload) => {
@@ -221,6 +347,18 @@ const main = async (): Promise<void> => {
       );
     });
   }
+
+  const reconciler =
+    mode === 'live' && liveAdapter
+      ? createReconciler({
+          intervalMs: env.EXECUTOR_RECONCILIATION_INTERVAL_MS,
+          bus,
+          logger,
+          liveAdapter,
+          getLocalOpenOrderIds: () => Array.from(localLiveOpenOrderIds),
+        })
+      : null;
+  reconciler?.start();
 
   const sweepTimer = setInterval(() => {
     if (mode !== 'simulation') return;
@@ -233,6 +371,12 @@ const main = async (): Promise<void> => {
     }
     maybeBroadcastCircuitBreaker().catch(() => undefined);
   }, env.EXECUTOR_SWEEP_INTERVAL_MS);
+
+  const statusHeartbeatTimer = setInterval(() => {
+    void publishStatus(null);
+  }, 5_000);
+
+  await publishStatus(null);
 
   const health = await startHealthServer({
     botId: 'executor',
@@ -251,6 +395,9 @@ const main = async (): Promise<void> => {
         takerFeeBps: env.EXECUTOR_TAKER_FEE_BPS,
         makerFeeBps: env.EXECUTOR_MAKER_FEE_BPS,
       },
+      paused,
+      pausedSince,
+      resumeSince,
     }),
   });
   logger.info({ url: health.url, mode }, 'bot-executor.health.ready');
@@ -266,7 +413,11 @@ const main = async (): Promise<void> => {
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'bot-executor.shutdown');
     clearInterval(sweepTimer);
+    clearInterval(statusHeartbeatTimer);
+    reconciler?.stop();
     await bus.shutdown();
+    await positionBook.shutdown();
+    if (liveAdapter) await liveAdapter.shutdown();
     await health.stop();
     process.exit(0);
   };

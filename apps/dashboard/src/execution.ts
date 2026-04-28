@@ -32,6 +32,7 @@ export interface ExecutionResultView {
   requestedSize: number | null;
   expiresAt: number | null;
   signalReason: string | null;
+  signalId: string | null;
   /** From executor payload; null if legacy event without tag (treated as simulation when filtering). */
   executorMode: ExecutorRunMode | null;
 }
@@ -108,6 +109,7 @@ export const extractExecutionResult = (event: GatewayEvent): ExecutionResultView
     requestedSize: num(d['requestedSize']),
     expiresAt: num(d['expiresAt']),
     signalReason,
+    signalId: typeof d['signalId'] === 'string' ? d['signalId'] : null,
     executorMode: isExecutorMode(d['executorMode']) ? d['executorMode'] : null,
   };
 };

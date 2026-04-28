@@ -9,7 +9,15 @@ import {
   ExecutionOrderSchema,
   ExecutionResultSchema,
   CancelOrderSchema,
+  ExecutorControlCommandSchema,
+  ExecutorStatusEventSchema,
 } from './schemas/execution.js';
+import { FillSchema, PositionSchema } from './schemas/position.js';
+import {
+  AdverseSelectionEventSchema,
+  MakerRewardScoreSchema,
+  ReconciliationEventSchema,
+} from './schemas/rewards.js';
 import { HealthReportSchema, CircuitBreakerEventSchema } from './schemas/health.js';
 
 /**
@@ -25,6 +33,8 @@ import { HealthReportSchema, CircuitBreakerEventSchema } from './schemas/health.
  *   executor:orders             -> Strategist   -> Executor
  *   executor:cancels            -> Strategist   -> Executor
  *   executor:results            -> Executor     -> Strategist + Dashboard
+ *   executor:control            -> Dashboard GW -> Executor (pause/resume)
+ *   system:executor-control     -> Executor     -> Dashboard Gateway
  *   system:health               -> all bots     -> Dashboard Gateway
  *   system:circuit-breaker      -> Strategist/Executor -> all bots
  */
@@ -35,6 +45,13 @@ export const Channels = {
   executorOrders: 'executor:orders',
   executorCancels: 'executor:cancels',
   executorResults: 'executor:results',
+  executorPositions: 'executor:positions',
+  executorFills: 'executor:fills',
+  executorReconciliation: 'executor:reconciliation',
+  executorControl: 'executor:control',
+  strategistRewardScores: 'strategist:reward-scores',
+  executorAdverseSelection: 'executor:adverse-selection',
+  systemExecutorStatus: 'system:executor-control',
   systemHealth: 'system:health',
   systemCircuitBreaker: 'system:circuit-breaker',
 } as const;
@@ -64,6 +81,13 @@ export const ChannelSchemas = {
   [Channels.executorOrders]: ExecutionOrderSchema,
   [Channels.executorCancels]: CancelOrderSchema,
   [Channels.executorResults]: ExecutionResultSchema,
+  [Channels.executorPositions]: PositionSchema,
+  [Channels.executorFills]: FillSchema,
+  [Channels.executorReconciliation]: ReconciliationEventSchema,
+  [Channels.executorControl]: ExecutorControlCommandSchema,
+  [Channels.strategistRewardScores]: MakerRewardScoreSchema,
+  [Channels.executorAdverseSelection]: AdverseSelectionEventSchema,
+  [Channels.systemExecutorStatus]: ExecutorStatusEventSchema,
   [Channels.systemHealth]: HealthReportSchema,
   [Channels.systemCircuitBreaker]: CircuitBreakerEventSchema,
 } as const;

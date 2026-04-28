@@ -52,6 +52,7 @@ export const EXECUTION_TABLE_LEGEND: readonly ColumnLegendRow[] = [
   { column: 'PnL (mtm)', meaning: 'Mark-to-market PnL vs current best bid/ask snapshot minus fees (dashboard calc).' },
   { column: 'Reason', meaning: 'Human error or signal reason text when the executor provides it.' },
   { column: 'Age / TTL', meaning: 'Time since update; for PLACED orders shows remaining TTL until expiry.' },
+  { column: 'Actions', meaning: 'Cancel resting order (PLACED / PARTIAL) via POST to dashboard-gateway → Redis executor:cancels.' },
 ];
 
 /** Raw gateway / Redis stream rows */

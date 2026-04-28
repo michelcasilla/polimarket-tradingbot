@@ -10,5 +10,7 @@ export type { MarketFichaContentProps } from './MarketFichaContent';
 export { MarketLineWithFicha } from './MarketLineWithFicha';
 export type { MarketLineWithFichaProps } from './MarketLineWithFicha';
 export { MetricsStrip } from './MetricsStrip';
+export { PositionsTable } from './PositionsTable';
+export { InventoryHeatmap } from './InventoryHeatmap';
 export { isStreamScope, SCOPE_VALUES } from './streamTypes';
 export type { StreamScope } from './streamTypes';
